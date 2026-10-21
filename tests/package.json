@@ -1,0 +1,1 @@
+{ "name": "cyriqcap-tests", "private": true, "version": "1.0.0", "scripts": { "test": "node run-unit.js" }, "devDependencies": { "playwright-core": "1.48.2", "acorn": "8.12.1" } }

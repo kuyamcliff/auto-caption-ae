@@ -1,1 +1,5 @@
 videos/
+tests/node_modules/
+api/build/
+dist/
+*.zip

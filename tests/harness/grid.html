@@ -1,0 +1,22 @@
+<!doctype html><html><head><meta charset="utf-8">
+<link rel="stylesheet" href="../../extension/com.cyriq.cyriqcap/css/fonts.css">
+<style>body{background:#111;color:#ccc;font:12px sans-serif;margin:0;display:flex;flex-wrap:wrap}div{margin:4px}canvas{display:block;width:384px;height:216px}</style>
+</head><body>
+<script src="../../extension/com.cyriq.cyriqcap/js/core/expr.js"></script>
+<script src="../../extension/com.cyriq.cyriqcap/js/core/presets.js"></script>
+<script src="../../extension/com.cyriq.cyriqcap/js/core/preview.js"></script>
+<script>
+const q=new URLSearchParams(location.search); const frac=parseFloat(q.get('f')||'0.5'); const only=q.get('id');
+const fams=Object.values(CQ.presets.FONTS).map(f=>document.fonts.load('40px "'+f.css+'"'));
+window.errors=[];
+Promise.all(fams).then(()=>{
+ CQ.presets.list.filter(p=>!only||p.id===only).forEach(p=>{
+  const d=document.createElement('div'); const c=document.createElement('canvas'); c.width=384;c.height=216;
+  d.appendChild(c); const l=document.createElement('span'); l.textContent=p.name; d.appendChild(l); document.body.appendChild(d);
+  const tl=CQ.preview.timeline(p,{});
+  const t = q.get('t')? parseFloat(q.get('t')) : tl.pad+ (frac<0? tl.inDur*(-frac) : tl.inDur+ (tl.total-tl.inDur-tl.outDur)*frac);
+  try{ CQ.preview.renderFrame(c,p,{time:t,timeline:tl}); }catch(e){ errors.push(p.id+': '+e.message); }
+ });
+ window.done=true;
+});
+</script></body></html>
