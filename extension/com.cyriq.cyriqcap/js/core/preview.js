@@ -12,7 +12,6 @@
   'use strict';
   var CQ = root.CQ = root.CQ || {};
 
-  var VW = 1920, VH = 1080;
 
   function hex(c) {
     if (Array.isArray(c)) return c;
@@ -183,17 +182,24 @@
       var blur = Math.max(s.bx, s.by);
       if (blur > 0.5 && opts.allowBlur !== false) ctx.filter = 'blur(' + (blur * opts.scale * 0.5).toFixed(1) + 'px)';
       var fill = opts.fillOverride || 'rgb(' + Math.round(s.fill[0]) + ',' + Math.round(s.fill[1]) + ',' + Math.round(s.fill[2]) + ')';
-      if (s.fillOp > 0.001 && !opts.strokeOnly) {
-        ctx.globalAlpha = Math.min(1, s.op) * s.fillOp;
-        ctx.fillStyle = fill;
-        ctx.fillText(ch, 0, L.capH / 2);
-      }
-      if (stroke && stroke.width) {
-        ctx.globalAlpha = Math.min(1, s.op);
-        ctx.lineWidth = stroke.width;
-        ctx.strokeStyle = opts.fillOverride || rgba(stroke.color || '#fff');
-        ctx.strokeText(ch, 0, L.capH / 2);
-      }
+      // same order as After Effects: fill over stroke unless the preset says otherwise
+      var drawFill = function () {
+        if (s.fillOp > 0.001 && !opts.strokeOnly) {
+          ctx.globalAlpha = Math.min(1, s.op) * s.fillOp;
+          ctx.fillStyle = fill;
+          ctx.fillText(ch, 0, L.capH / 2);
+        }
+      };
+      var drawStroke = function () {
+        if (stroke && stroke.width) {
+          ctx.globalAlpha = Math.min(1, s.op);
+          ctx.lineWidth = stroke.width;
+          ctx.lineJoin = 'round';
+          ctx.strokeStyle = opts.fillOverride || rgba(stroke.color || '#fff');
+          ctx.strokeText(ch, 0, L.capH / 2);
+        }
+      };
+      if (stroke && stroke.over === false) { drawFill(); drawStroke(); } else { drawStroke(); drawFill(); }
       ctx.restore();
     });
   }
@@ -575,6 +581,7 @@
     var o = opts || {};
     var ctx = cv.getContext('2d');
     var W = cv.width, H = cv.height;
+    var VW = o.frameW || 1920, VH = o.frameH || 1080;   // virtual composition size
     var scale = Math.min(W / VW, H / VH);
     var speed = o.speed || 1;
     var tl = o.timeline || timeline(p, o);
@@ -602,7 +609,7 @@
     positions(L, o.justify);
 
     // fit long text into the frame
-    var fit = Math.min(1, (VW * (o.fitWidth || 0.86)) / Math.max(1, L.box.w), (VH * 0.6) / Math.max(1, L.box.h));
+    var fit = o.noFit ? 1 : Math.min(o.maxFit || 1, (VW * (o.fitWidth || 0.86)) / Math.max(1, L.box.w), (VH * (o.fitHeight || 0.6)) / Math.max(1, L.box.h));
     var ls = fit;
 
     // layer transform (scale punch, tilt) from layer expressions

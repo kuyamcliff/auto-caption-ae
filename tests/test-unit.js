@@ -89,8 +89,37 @@ t('fitTiming snaps to frames', () => {
   assert.ok(Math.abs(f[0].start * 24 - Math.round(f[0].start * 24)) < 1e-6);
 });
 t('fitTiming handles time stretch', () => {
-  const f = C.fitTiming([{ text: 'x', start: 1, end: 2, words: [] }], { stretch: 200, fps: 100 });
+  const f = C.fitTiming([{ text: 'x', start: 1, end: 2, words: [] }], { stretch: 200, fps: 100, tail: 0 });
   assert.ok(Math.abs(f[0].start - 2) < 1e-6 && Math.abs(f[0].end - 4) < 1e-6);
+});
+t('auto never ends a caption on a weak word when it can avoid it', () => {
+  const w = C.normalize([{ start: 0, end: 12, words: words('I am going to show you how to edit the clip and then we will add some captions to the video today') }]);
+  const g = C.groupWords(w, 'auto', { maxChars: 24 });
+  g.slice(0, -1).forEach(x => assert.ok(!C.isWeak(x.words[x.words.length - 1].text), x.text));
+  g.forEach(x => assert.ok(x.text.length <= 24, x.text));
+});
+t('fixed word count does not cross a sentence end', () => {
+  const w = C.normalize([{ start: 0, end: 5, words: words('One two. Three four five') }]);
+  assert.deepStrictEqual(C.groupWords(w, 4).map(x => x.text), ['One two.', 'Three four five']);
+});
+t('captions end at speech end and leave pauses empty', () => {
+  const g = [{ text: 'a', start: 1, end: 2, words: [] }, { text: 'b', start: 4, end: 5, words: [] }];
+  const f = C.fitTiming(g, { fps: 25 });
+  assert.ok(f[0].end < 2.2 && f[1].start >= 4 - 1e-9, JSON.stringify(f));
+});
+t('speech regions and word snapping', () => {
+  const rate = 16000, s = new Int16Array(rate * 3);
+  for (let i = 0; i < s.length; i++) { const t = i / rate; s[i] = (t > 1 && t < 2 ? 8000 * Math.sin(i * 0.3) : (Math.random() - 0.5) * 20) | 0; }
+  const r = C.speechRegions(s, rate);
+  assert.strictEqual(r.length, 1);
+  assert.ok(Math.abs(r[0].start - 1) < 0.05 && Math.abs(r[0].end - 2) < 0.07, JSON.stringify(r));
+  const w = C.snapWords([{ text: 'hi', start: 0.7, end: 2.4 }], r);
+  assert.ok(Math.abs(w[0].start - r[0].start) < 1e-9 && Math.abs(w[0].end - r[0].end) < 1e-9);
+});
+t('balanced two-line wrap', () => {
+  const t2 = C.wrapLines('this is a fairly long caption line here', 24, 2).split('\r');
+  assert.strictEqual(t2.length, 2);
+  assert.ok(Math.abs(t2[0].length - t2[1].length) < 8);
 });
 t('time parse/format round trip', () => {
   assert.strictEqual(C.fmtTime(65.5), '01:05.50');

@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<ExtensionManifest Version="7.0" ExtensionBundleId="com.cyriq.cyriqcap" ExtensionBundleVersion="1.0.0" ExtensionBundleName="CyriqCap"
+<ExtensionManifest Version="7.0" ExtensionBundleId="com.cyriq.cyriqcap" ExtensionBundleVersion="1.1.0" ExtensionBundleName="CyriqCap"
   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
   <ExtensionList>
-    <Extension Id="com.cyriq.cyriqcap.panel" Version="1.0.0" />
+    <Extension Id="com.cyriq.cyriqcap.panel" Version="1.1.0" />
   </ExtensionList>
   <ExecutionEnvironment>
     <HostList>
@@ -36,8 +36,8 @@
           <Type>Panel</Type>
           <Menu>CyriqCap</Menu>
           <Geometry>
-            <Size><Height>820</Height><Width>440</Width></Size>
-            <MinSize><Height>360</Height><Width>280</Width></MinSize>
+            <Size><Height>560</Height><Width>320</Width></Size>
+            <MinSize><Height>300</Height><Width>250</Width></MinSize>
             <MaxSize><Height>3000</Height><Width>3000</Width></MaxSize>
           </Geometry>
           <Icons>

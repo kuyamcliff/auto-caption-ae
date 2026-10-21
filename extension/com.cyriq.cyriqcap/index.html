@@ -10,16 +10,14 @@
 <body>
   <div id="app">
     <header class="top">
-      <div class="brand"><span class="mark" id="brandMark"></span>CyriqCap</div>
+      <nav class="tabs" id="tabs">
+        <button data-tab="captions" class="active">Captions</button>
+        <button data-tab="animate">Animate</button>
+        <button data-tab="help">Help</button>
+      </nav>
       <div class="spacer"></div>
-      <div class="status" id="apiPill" title="API folder"><span class="dot" id="apiDot"></span><span id="apiText"></span></div>
+      <button class="iconbtn" id="gear" title="Settings"><i data-icon="gear"></i><span class="badge hidden" id="gearBadge"></span></button>
     </header>
-    <nav class="tabs" id="tabs">
-      <button data-tab="captions" class="active"><i data-icon="captions"></i><span>Captions</span></button>
-      <button data-tab="animate"><i data-icon="text"></i><span>Animate</span></button>
-      <button data-tab="help"><i data-icon="help"></i><span>Help</span></button>
-      <button data-tab="settings"><i data-icon="gear"></i><span>Settings</span></button>
-    </nav>
     <main>
       <section class="view active" id="view-captions"></section>
       <section class="view" id="view-animate"></section>

@@ -24,6 +24,17 @@
 
   var MANIFEST = 'cyriqcap-api.json';
 
+  // the panel ships its own (newer) WhisperX runner; the API folder's copy is the fallback
+  var extDir = null;
+  function setExtensionDir(d) { extDir = d; }
+  function runnerPath() {
+    if (!hasNode) return null;
+    var base = extDir;
+    if (!base) { try { base = path.join(__dirname, '..', '..'); } catch (e) { base = null; } }
+    var f = base ? path.join(base, 'runner', 'run_whisperx.py') : null;
+    return f && exists(f) ? f : null;
+  }
+
   /* ---------------------------------------------------------------- */
   /* small utils                                                        */
   /* ---------------------------------------------------------------- */
@@ -126,7 +137,8 @@
         whisperCli: path.join(dir, 'whisper.cpp', 'whisper-cli' + exe),
         ggmlSmall: path.join(dir, 'models', 'ggml-small.bin'),
         python: isWin ? path.join(dir, 'python', 'python.exe') : path.join(dir, 'python', 'bin', 'python3'),
-        wxScript: path.join(dir, 'whisperx', 'run_whisperx.py'),
+        wxScript: runnerPath() || path.join(dir, 'whisperx', 'run_whisperx.py'),
+        ownRunner: !!runnerPath(),
         wxModel: path.join(dir, 'models', 'faster-whisper-small'),
         torchHome: path.join(dir, 'models', 'torch'),
         nltk: path.join(dir, 'models', 'nltk_data'),
@@ -138,6 +150,64 @@
       var p = path.join(dir, MANIFEST);
       if (!exists(p)) return null;
       try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch (e) { return { _error: e.message }; }
+    },
+
+    /** The folder the user picked, or a CyriqCap-API folder right inside it. */
+    resolve: function (dir) {
+      if (!dir) return dir;
+      if (exists(path.join(dir, MANIFEST))) return dir;
+      var inner = path.join(dir, 'CyriqCap-API');
+      if (exists(path.join(inner, MANIFEST))) return inner;
+      try {
+        var sub = fs.readdirSync(dir).filter(function (f) { return exists(path.join(dir, f, MANIFEST)) || exists(path.join(dir, f, 'CyriqCap-API', MANIFEST)); })[0];
+        if (sub) return Api.resolve(path.join(dir, sub));
+      } catch (e) {}
+      return dir;
+    },
+
+    /**
+     * Instant check: only the files each part needs to start (about 40 files),
+     * compared by size. No hashing.
+     */
+    quick: function (dir) {
+      var res = { ok: false, dir: dir, version: null, engines: { whispercpp: false, whisperx: false, align: false }, missing: [], problems: [] };
+      if (!dir || !exists(dir)) { res.problems.push('FOLDER_NOT_FOUND'); return res; }
+      var m = Api.readManifest(dir);
+      if (!m) { res.problems.push('NOT_API_FOLDER'); return res; }
+      if (m._error) { res.problems.push('MANIFEST_DAMAGED'); return res; }
+      res.version = m.version;
+      var KEY = /^(bin\/ffmpeg|whisper\.cpp\/|models\/ggml-small\.bin|whisperx\/|models\/faster-whisper-small\/|models\/align\/|python\/[^/]+$|python\/Lib\/site-packages\/(torch\/lib\/(torch_cpu|c10)\.dll|torch\/__init__\.py|whisperx\/__init__\.py|ctranslate2\/__init__\.py|faster_whisper\/__init__\.py|pyannote\/audio\/__init__\.py|numpy\/__init__\.py))/;
+      var groups = {};
+      (m.files || []).forEach(function (f) {
+        if (!KEY.test(f.path)) return;
+        var g = groups[f.group] = groups[f.group] || true;
+        var st = stat(path.join(dir, f.path.split('/').join(path.sep)));
+        if (!st || (f.size != null && st.size !== f.size)) { groups[f.group] = false; res.missing.push(f.path); }
+      });
+      function g(n) { return groups[n] === true; }
+      res.engines.whispercpp = g('ffmpeg') && g('whispercpp') && g('model-ggml-small');
+      res.engines.whisperx = g('ffmpeg') && g('python') && g('whisperx') && g('model-faster-whisper-small');
+      res.engines.align = g('model-align-en');
+      res.ok = res.engines.whispercpp && res.engines.whisperx && res.engines.align;
+      if (!res.engines.whispercpp && !res.engines.whisperx) res.problems.push('INCOMPLETE');
+      return res;
+    },
+
+    /** Start the Python runtime once (imports only). Resolves {ok, seconds}. */
+    testPython: function (dir) {
+      var P = Api.paths(dir), t0 = Date.now();
+      if (!exists(P.python)) return Promise.resolve({ ok: false, seconds: 0 });
+      var env = {}; for (var k in process.env) env[k] = process.env[k];
+      pythonEnv(env, P);
+      return run(P.python, ['-I', '-c', 'import torch, ctranslate2, faster_whisper, whisperx; print("ok")'], { step: 'pytest', env: env, cwd: path.dirname(P.python), timeout: 600000 })
+        .then(function (r) {
+          var ok = /ok/.test(r.out);
+          Log.info(null, 'python test ok=' + ok + ' ' + ((Date.now() - t0) / 1000).toFixed(1) + 's');
+          return { ok: ok, seconds: (Date.now() - t0) / 1000 };
+        }, function (e) {
+          Log.warn(null, 'python test failed ' + e.code + ' :: ' + String(e.detail || '').slice(-1200));
+          return { ok: false, seconds: (Date.now() - t0) / 1000, code: e.code };
+        });
     },
 
     /**
@@ -261,12 +331,52 @@
     });
   }
 
+  /** 16-bit PCM WAV -> {rate, samples: Int16Array} (mono or first channel). */
+  function readWav(file) {
+    var b = fs.readFileSync(file);
+    if (b.toString('ascii', 0, 4) !== 'RIFF' || b.toString('ascii', 8, 12) !== 'WAVE') return null;
+    var p = 12, rate = 16000, ch = 1, bits = 16;
+    while (p + 8 <= b.length) {
+      var id = b.toString('ascii', p, p + 4), size = b.readUInt32LE(p + 4);
+      if (id === 'fmt ') { ch = b.readUInt16LE(p + 10); rate = b.readUInt32LE(p + 12); bits = b.readUInt16LE(p + 22); }
+      if (id === 'data') {
+        if (bits !== 16) return null;
+        var n = Math.floor(Math.min(size, b.length - p - 8) / 2 / ch), out = new Int16Array(n);
+        for (var i = 0; i < n; i++) out[i] = b.readInt16LE(p + 8 + i * 2 * ch);
+        return { rate: rate, samples: out };
+      }
+      p += 8 + size + (size % 2);
+    }
+    return null;
+  }
+
   /* ---------------------------------------------------------------- */
   /* transcription engines                                             */
   /* ---------------------------------------------------------------- */
   function parseStamp(s) { var m = /(\d+):(\d+):(\d+)[,.](\d+)/.exec(s || ''); return m ? Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]) + Number(m[4]) / 1000 : NaN; }
 
   function threads() { var n = hasNode ? os.cpus().length : 4; return Math.max(1, Math.min(8, n - 1)); }
+
+  /**
+   * Environment for the private Python runtime.
+   * - torch and ctranslate2 each ship libiomp5md.dll; without
+   *   KMP_DUPLICATE_LIB_OK the process aborts on Windows ("OMP: Error #15").
+   * - caches must be writable even if the API folder is read-only.
+   * - no telemetry, no network.
+   */
+  function pythonEnv(env, P) {
+    var cache = path.join(Temp.root(), 'cache');
+    try { mkdirp(path.join(cache, 'torch')); mkdirp(path.join(cache, 'hf')); mkdirp(path.join(cache, 'mpl')); } catch (e) {}
+    env.HF_HUB_OFFLINE = '1'; env.TRANSFORMERS_OFFLINE = '1'; env.HF_DATASETS_OFFLINE = '1'; env.HF_HUB_DISABLE_TELEMETRY = '1';
+    env.HF_HOME = path.join(cache, 'hf'); env.TORCH_HOME = path.join(cache, 'torch'); env.MPLCONFIGDIR = path.join(cache, 'mpl');
+    env.NLTK_DATA = P.nltk;
+    env.KMP_DUPLICATE_LIB_OK = 'TRUE';
+    env.PYANNOTE_METRICS_ENABLED = 'false'; env.OTEL_SDK_DISABLED = 'true';
+    env.PYTHONIOENCODING = 'utf-8'; env.PYTHONUTF8 = '1'; env.PYTHONNOUSERSITE = '1'; env.PYTHONDONTWRITEBYTECODE = '1';
+    env.OMP_NUM_THREADS = String(threads()); env.TOKENIZERS_PARALLELISM = 'false';
+    delete env.PYTHONPATH; delete env.PYTHONHOME;
+    return env;
+  }
 
   var Engines = {
     /**
@@ -277,6 +387,8 @@
       var o = opts || {};
       var base = wav.replace(/\.wav$/i, '') + '-wc';
       var args = ['-m', o.ggml, '-f', wav, '-t', String(threads()), '-l', o.language || 'auto', '-ojf', '-of', base, '-pp', '-np'];
+      // DTW token timestamps: much closer word timing (needs flash attention off)
+      if (o.dtw) args.push('--dtw', o.dtw, '-nfa');
       if (o.onStage) o.onStage('loading', null);
       return run(P.whisperCli, args, {
         step: 'transcribe', signal: o.signal, timeout: Math.max(600000, (o.duration || 60) * 15000), cwd: path.dirname(P.whisperCli),
@@ -289,6 +401,7 @@
         if (!exists(jf)) throw CQError('NO_RESULT', 'transcribe');
         var raw;
         try { raw = JSON.parse(fs.readFileSync(jf, 'utf8')); } catch (e) { throw CQError('BAD_RESULT', 'transcribe', '', '', e.message); }
+        var dtwUsed = false;
         var segments = (raw.transcription || []).map(function (seg) {
           var words = [], cur = null;
           (seg.tokens || []).forEach(function (tk) {
@@ -296,16 +409,31 @@
             if (!tx || /^\[_/.test(tx) || /^\[.*\]$/.test(tx.trim())) return;
             var a = tk.offsets ? tk.offsets.from / 1000 : parseStamp(tk.timestamps && tk.timestamps.from);
             var b = tk.offsets ? tk.offsets.to / 1000 : parseStamp(tk.timestamps && tk.timestamps.to);
-            if (!cur || /^\s/.test(tx)) { cur = { word: tx.trim(), start: a, end: b }; words.push(cur); }
-            else { cur.word += tx; cur.end = b; }
+            var d = typeof tk.t_dtw === 'number' && tk.t_dtw >= 0 ? tk.t_dtw / 100 : null;
+            if (!cur || /^\s/.test(tx)) { cur = { word: tx.trim(), start: a, end: b, d0: d, d1: d }; words.push(cur); }
+            else { cur.word += tx; cur.end = b; if (d != null) { cur.d1 = d; if (cur.d0 == null) cur.d0 = d; } }
           });
           words = words.filter(function (w) { return w.word; });
+          // DTW marks roughly the end of each token: word end = last token,
+          // word start = shortly before its first token (measured against WhisperX)
+          if (words.length && words.every(function (w) { return w.d0 != null; })) {
+            dtwUsed = true;
+            words.forEach(function (w, i) {
+              var prev = words[i - 1];
+              w.end = w.d1 + 0.03;
+              w.start = Math.max(prev ? prev.end : 0, w.d0 - 0.1);
+              if (w.end < w.start + 0.05) w.end = w.start + 0.05;
+            });
+          }
+          words.forEach(function (w) { delete w.d0; delete w.d1; });
           return { start: seg.offsets ? seg.offsets.from / 1000 : 0, end: seg.offsets ? seg.offsets.to / 1000 : 0, text: String(seg.text || '').trim(), words: words };
         }).filter(function (s) { return s.text && !/^\[.*\]$/.test(s.text); });
-        return { language: raw.result ? raw.result.language : (o.language || 'en'), segments: segments, wordTiming: 'whisper' };
+        return { language: raw.result ? raw.result.language : (o.language || 'en'), segments: segments, wordTiming: dtwUsed ? 'dtw' : 'whisper' };
       }, function (e) {
         if (e.code === 'CANCELLED') throw e;
         var d = String(e.detail || '');
+        // older builds without DTW support: run once more without it
+        if (o.dtw && /dtw|unknown argument|invalid argument|alignment heads/i.test(d)) { var o2 = {}; for (var k in o) o2[k] = o[k]; o2.dtw = null; return Engines.whispercpp(wav, P, o2); }
         if (/failed to (load|read|open) model|invalid model|bad magic/i.test(d)) throw CQError('MODEL_CORRUPT', 'transcribe', '', '', d);
         if (/not enough memory|bad_alloc|out of memory/i.test(d)) throw CQError('NO_MEMORY', 'transcribe', '', '', d);
         if (/3221225781|0xC0000135|dll/i.test(e.code + ' ' + d)) throw CQError('DLL_MISSING', 'transcribe', '', '', d);
@@ -319,12 +447,9 @@
       var outJson = wav.replace(/\.wav$/i, o.segments ? '.align.json' : '.wx.json');
       var env = {};
       for (var k in process.env) env[k] = process.env[k];
-      env.HF_HUB_OFFLINE = '1'; env.TRANSFORMERS_OFFLINE = '1'; env.HF_DATASETS_OFFLINE = '1';
-      env.HF_HOME = P.hf; env.TORCH_HOME = P.torchHome; env.NLTK_DATA = P.nltk;
-      env.PYTHONIOENCODING = 'utf-8'; env.PYTHONUTF8 = '1'; env.PYTHONNOUSERSITE = '1';
-      env.OMP_NUM_THREADS = String(threads());
-      delete env.PYTHONPATH; delete env.PYTHONHOME;
+      pythonEnv(env, P);
       var args = ['-I', P.wxScript, '--audio', wav, '--out', outJson, '--threads', String(threads()), '--language', o.language || 'auto'];
+      if (P.ownRunner) args.push('--api', P.dir);
       if (o.segments) {
         var segFile = wav.replace(/\.wav$/i, '.segments.json');
         fs.writeFileSync(segFile, JSON.stringify(o.segments));
@@ -332,7 +457,7 @@
       } else args.push('--model', o.ct2);
       var buf = '';
       return run(P.python, args, {
-        step: o.segments ? 'align' : 'transcribe', signal: o.signal, env: env, cwd: path.dirname(P.wxScript), timeout: Math.max(900000, (o.duration || 60) * 25000),
+        step: o.segments ? 'align' : 'transcribe', signal: o.signal, env: env, cwd: path.dirname(P.python), timeout: Math.max(900000, (o.duration || 60) * 25000),
         onStdout: function (s) {
           buf += s;
           var lines = buf.split(/\r?\n/); buf = lines.pop();
@@ -501,7 +626,7 @@
     var modelId = o.model || CQ.models.DEFAULT;
     var ggml = Models.ggmlPath(o.apiDir, modelId), ct2 = Models.ct2Dir(o.apiDir, modelId);
     var haveGgml = exists(ggml), haveCt2 = exists(path.join(ct2, 'model.bin'));
-    var py = Models.pythonOk(P), align = py && Models.alignOk(P);
+    var py = o.pythonOk !== false && Models.pythonOk(P), align = py && Models.alignOk(P);
     if (!haveGgml && !haveCt2) return Promise.reject(CQError('MODEL_MISSING', 'prepare'));
     Log.info(self.id, 'start model=' + modelId + ' ggml=' + haveGgml + ' ct2=' + haveCt2 + ' py=' + py + ' align=' + align + ' lang=' + (o.language || 'auto') + ' pieces=' + o.plan.pieces.length + ' len=' + (o.plan.range.end - o.plan.range.start).toFixed(2) + 's');
     var t0 = Date.now();
@@ -512,7 +637,7 @@
 
     function viaWhisperCpp() {
       if (!haveGgml) throw CQError('MODEL_MISSING', 'transcribe');
-      return Engines.whispercpp(wav, P, { ggml: ggml, language: o.language, duration: duration, signal: self.signal, onStage: stage }).then(function (r) {
+      return Engines.whispercpp(wav, P, { ggml: ggml, dtw: modelId.replace(/-/g, '.'), language: o.language, duration: duration, signal: self.signal, onStage: stage }).then(function (r) {
         if (!align || !r.segments.length) return r;
         set('aligning', null);
         return Engines.python(wav, P, { segments: r.segments.map(function (s) { return { start: s.start, end: s.end, text: s.text }; }), language: r.language, duration: duration, signal: self.signal, onStage: function (st, pct) { set('aligning', st === 'aligning' ? pct : null); } })
@@ -542,6 +667,11 @@
       .then(function (r) {
         var words = CQ.captions.normalize(r.segments);
         if (!words.length) throw CQError('EMPTY', 'transcribe');
+        // snap word edges to where the voice actually starts and stops
+        try {
+          var pcm = readWav(wav);
+          if (pcm) CQ.captions.snapWords(words, CQ.captions.speechRegions(pcm.samples, pcm.rate));
+        } catch (e) { Log.warn(self.id, 'speech snap skipped: ' + e.message); }
         Log.info(self.id, 'done words=' + words.length + ' timing=' + r.wordTiming + ' in ' + ((Date.now() - t0) / 1000).toFixed(1) + 's');
         set('done', 1);
         return { words: words, language: r.language, wordTiming: r.wordTiming, seconds: (Date.now() - t0) / 1000, model: modelId };
@@ -581,6 +711,6 @@
     return { title: m[0], text: m[1] };
   }
 
-  CQ.services = { hasNode: hasNode, isWin: isWin, Log: Log, Api: Api, Temp: Temp, Fonts: Fonts, Engines: Engines, Models: Models, friendly: friendly, TranscriptionJob: TranscriptionJob, extractAudio: extractAudio, run: run, Signal: Signal, CQError: CQError, appDataDir: appDataDir, exists: exists, mkdirp: mkdirp };
+  CQ.services = { hasNode: hasNode, isWin: isWin, Log: Log, Api: Api, Temp: Temp, Fonts: Fonts, Engines: Engines, Models: Models, friendly: friendly, TranscriptionJob: TranscriptionJob, extractAudio: extractAudio, readWav: readWav, pythonEnv: pythonEnv, setExtensionDir: setExtensionDir, run: run, Signal: Signal, CQError: CQError, appDataDir: appDataDir, exists: exists, mkdirp: mkdirp };
   if (typeof module !== 'undefined' && module.exports) module.exports = CQ.services;
 })(typeof window !== 'undefined' ? window : global);

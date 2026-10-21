@@ -102,7 +102,7 @@ var CQJSON = (function () {
 /* Helpers                                                              */
 /* ------------------------------------------------------------------ */
 var CQ = {};
-CQ.VERSION = '1.0.0';
+CQ.VERSION = '1.1.0';
 CQ.TAG = 'CQ ';            // prefix for animators/effects/layers we create
 
 CQ.ok = function (data) { var r = { ok: true }; for (var k in data) if (data.hasOwnProperty(k)) r[k] = data[k]; return CQJSON.stringify(r); };
@@ -895,6 +895,34 @@ CQ.getAudioPlan = function (json) {
  *   shadow: {...} | null, preset: <built preset> | null, prefix: 'Caption'
  * }
  */
+/**
+ * Static placement (no expressions): the anchor sits on the side of the text
+ * box that faces the chosen edge, so every caption keeps the same margin
+ * whatever its length or line count.
+ * P.place = {v: top|middle|bottom, h: left|center|right, margin}; P.position = [x, y] (older payloads)
+ */
+CQ.placeCaption = function (comp, layer, P, t, w) {
+  var tr = layer.property('ADBE Transform Group');
+  var pl = P.place || { v: 'bottom', h: 'center', margin: 100 };
+  var r = null;
+  try { r = layer.sourceRectAtTime(t, false); } catch (e) { r = null; }
+  if (!r || !(r.width > 0)) {
+    var av = pl.v, ah = pl.h;
+    var ax = ah === 'left' ? 'r.left' : ah === 'right' ? 'r.left+r.width' : 'r.left+r.width/2';
+    var ay = av === 'top' ? 'r.top' : av === 'bottom' ? 'r.top+r.height' : 'r.top+r.height/2';
+    CQ.setExpr(tr.property('ADBE Anchor Point'), '/*CQ*/var r=sourceRectAtTime(inPoint,false);[' + ax + ',' + ay + '];', w, 'anchor');
+  } else {
+    var x0 = pl.h === 'left' ? r.left : pl.h === 'right' ? r.left + r.width : r.left + r.width / 2;
+    var y0 = pl.v === 'top' ? r.top : pl.v === 'bottom' ? r.top + r.height : r.top + r.height / 2;
+    tr.property('ADBE Anchor Point').setValue([x0, y0]);
+  }
+  var m = pl.margin || 0, W = comp.width, H = comp.height;
+  var x = pl.h === 'left' ? m : pl.h === 'right' ? W - m : W / 2;
+  var y = pl.v === 'top' ? m : pl.v === 'bottom' ? H - m : H / 2;
+  if (P.position && !P.place) { x = P.position[0]; y = P.position[1]; }
+  tr.property('ADBE Position').setValue([x, y]);
+};
+
 CQ.createCaptions = function (json) {
   var comp = CQ.activeComp();
   if (!comp) return CQ.fail('NO_COMP', 'Open a composition first.');
@@ -916,6 +944,7 @@ CQ.createCaptions = function (json) {
   var anchorLayer = null;
   try { if (P.aboveLayerIndex) anchorLayer = comp.layer(P.aboveLayerIndex); } catch (e0) {}
 
+  var prevLayer = null;
   app.beginUndoGroup('CyriqCap: Create captions');
   try {
     for (i = 0; i < caps.length; i++) {
@@ -932,14 +961,8 @@ CQ.createCaptions = function (json) {
       layer.startTime = 0;
       layer.inPoint = start;
       layer.outPoint = end;
-      // position: anchor at the text centre so alignment is stable
-      try {
-        var av = P.anchor ? P.anchor.v : 'middle', ah = P.anchor ? P.anchor.h : 'center';
-        var ax = ah === 'left' ? 'r.left' : ah === 'right' ? 'r.left+r.width' : 'r.left+r.width/2';
-        var ay = av === 'top' ? 'r.top' : av === 'bottom' ? 'r.top+r.height' : 'r.top+r.height/2';
-        CQ.setExpr(layer.property('ADBE Transform Group').property('ADBE Anchor Point'), '/*CQ*/var r=sourceRectAtTime(inPoint+(outPoint-inPoint)/2,false);[' + ax + ',' + ay + '];', w, 'anchor');
-        layer.property('ADBE Transform Group').property('ADBE Position').setValue([P.position[0], P.position[1]]);
-      } catch (e1) { w.push('position: ' + e1.message); }
+      // place the text: anchor on the text edge that faces the margin, measured once
+      try { CQ.placeCaption(comp, layer, P, start, w); } catch (e1) { w.push('position: ' + e1.message); }
       if (P.highlight && cap.highlightExpr) {
         CQ.addAnimator(layer, { based: 'words', props: { fill: P.highlight.color }, expr: cap.highlightExpr, label: 'Highlight' }, 1, 1, w);
         // keep it when a preset is applied on top
@@ -972,7 +995,9 @@ CQ.createCaptions = function (json) {
           bx.moveAfter(layer);
         } catch (e3) { w.push('box: ' + e3.message); }
       }
-      if (anchorLayer) { try { layer.moveBefore(anchorLayer); } catch (e4) {} }
+      // keep caption 001 on top, all of them right above the source layer
+      try { if (prevLayer) layer.moveAfter(prevLayer); else if (anchorLayer) layer.moveBefore(anchorLayer); } catch (e4) {}
+      prevLayer = layer;
       created.push({ name: layer.name, index: layer.index, warnings: w });
       for (var q = 0; q < w.length; q++) if (w[q].indexOf('FONT_MISSING') === 0 && warnings.join('|').indexOf(w[q]) < 0) warnings.push(w[q]);
     }

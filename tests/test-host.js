@@ -155,7 +155,7 @@ for (const p of presets.filter(x => (x.needs || []).length)) {
   const payload = {
     captions: [{ text: 'HELLO THERE', start: 1, end: 2, highlightExpr: CQ.builder.highlightExpr(words) }, { text: 'SECOND ONE', start: 2, end: 3.5 }],
     style: { font: 'Montserrat-Bold', size: 80, fill: '#ffffff', stroke: { color: '#000000', width: 4 }, tracking: 20, justify: 'center' },
-    position: [960, 900], box: { color: '#000000', opacity: 60, padX: 20, padY: 10, round: 8 },
+    place: { v: 'bottom', h: 'center', margin: 120 }, box: { color: '#000000', opacity: 60, padX: 20, padY: 10, round: 8 },
     highlight: { color: '#ffd400' },
     shadow: { fx: 'shadow', color: '#000000', opacity: 80, distance: 4, softness: 8 },
     preset: CQ.builder.build(CQ.presets.byId('neon-word-pop'), { useFont: false, useColors: false })
@@ -168,6 +168,11 @@ for (const p of presets.filter(x => (x.needs || []).length)) {
     const caps = env.comp._layers.filter(l => /^Caption \d+/.test(l.name));
     assert.strictEqual(caps.length, 2);
     assert.ok(caps.every(l => l.inPoint < l.outPoint));
+    assert.ok(caps[0].name === 'Caption 001' && caps[0].index < caps[1].index, 'caption order');
+    const pos = caps[0].property('ADBE Transform Group').property('ADBE Position').value;
+    assert.ok(Math.abs(pos[1] - (env.comp.height - 120)) < 1e-6, 'bottom margin ' + pos);
+    const anc = caps[0].property('ADBE Transform Group').property('ADBE Anchor Point');
+    assert.ok(!anc.expression, 'static anchor');
     state.issues.forEach(i => fail('captions: ' + i));
     for (const e of state.expressions) {
       const v = valueFor(e.prop);

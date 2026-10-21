@@ -7,9 +7,9 @@ from PIL import Image, ImageDraw
 
 raw, ext = sys.argv[1], sys.argv[2]
 S = 2                # device scale of the raw shots
-G = 44 * S           # gutter width
+G = 36 * S           # gutter width
 P = 10 * S           # top / bottom padding
-BG = (10, 10, 10)
+BG = (27, 27, 27)
 targets = json.load(open(os.path.join(raw, 'targets.json')))
 out = {}
 for name, rects in targets.items():

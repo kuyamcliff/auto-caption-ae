@@ -9,7 +9,7 @@
   var q = {};
   try { (root.location.search || '').replace(/^\?/, '').split('&').forEach(function (kv) { var p = kv.split('='); if (p[0]) q[decodeURIComponent(p[0])] = decodeURIComponent(p[1] || ''); }); } catch (e) {}
 
-  var comp = { id: 7, name: 'Main Edit', width: 1920, height: 1080, duration: 30, frameRate: 30, time: 0 };
+  var comp = q.vertical ? { id: 8, name: 'Reel', width: 1080, height: 1920, duration: 30, frameRate: 30, time: 0 } : { id: 7, name: 'Main Edit', width: 1920, height: 1080, duration: 30, frameRate: 30, time: 0 };
   var layers = {
     video: { index: 3, name: 'interview_take2.mp4', kind: 'video-audio', inPoint: 0, outPoint: 24.5, startTime: 0, stretch: 100, fileExists: true },
     text: { index: 1, name: 'TITLE', kind: 'text', inPoint: 0, outPoint: 6, text: 'TITLE' },
@@ -62,29 +62,9 @@
       return delay(60, H[fn](payload));
     },
     manifest: function () { return mockManifest; },
-    verifyApi: function (dir, o) {
-      o = o || {};
-      var files = mockManifest.files, bad = q.api === 'bad' ? { python: 1, whisperx: 1 } : {};
-      var res = { ok: true, dir: dir, version: '1.0.0', missing: [], wrongSize: [], badHash: [], groups: {}, engines: {}, problems: [] };
-      var i = 0;
-      return new Promise(function (resolve) {
-        function step() {
-          for (var k = 0; k < 40 && i < files.length; k++) {
-            var f = files[i++];
-            if (o.onFile) o.onFile(i, files.length, f.path, f.group);
-            var g = res.groups[f.group] = res.groups[f.group] || { ok: true, files: 0 };
-            g.files++;
-            if (bad[f.group] && i % 97 === 0) { g.ok = false; res.missing.push(f.path); if (o.onFail) o.onFail(f.path, f.group); }
-          }
-          if (i < files.length) return setTimeout(step, q.fast ? 0 : 16);
-          function ok(n) { return res.groups[n] && res.groups[n].ok; }
-          res.engines = { whispercpp: ok('ffmpeg') && ok('whispercpp') && ok('model-ggml-small'), whisperx: ok('python') && ok('whisperx') && ok('model-faster-whisper-small'), align: ok('model-align-en') };
-          res.ok = !res.missing.length;
-          if (!res.ok) res.problems.push('PARTIAL');
-          resolve(res);
-        }
-        step();
-      });
+    verifyApi: function (dir) {
+      var bad = q.api === 'bad';
+      return { ok: !bad, dir: dir, version: '1.0.0', engines: { whispercpp: !bad, whisperx: !bad, align: !bad }, missing: bad ? ['whisper.cpp/whisper-cli.exe'] : [], problems: bad ? ['INCOMPLETE'] : [] };
     },
     modelStatus: function () {
       return CQ.models.list.map(function (m) {

@@ -276,7 +276,7 @@
   function highlightExpr(words, mode) {
     var S = words.map(function (w) { return n(w.start); }), E = words.map(function (w) { return n(w.end); });
     return TAG + 'var S=[' + S.join(',') + '],E=[' + E.join(',') + '];var i=textIndex-1;\nvar on=' +
-      (mode === 'progressive' ? 'time>=S[i]' : 'time>=S[i]&&time<E[i]') + ';\nvar v=on?100:0;\n[v,v,v];';
+      (mode === 'progressive' ? 'time>=S[i]' : 'time>=S[i]&&(i>=S.length-1||time<S[i+1])') + ';\nvar v=on?100:0;\n[v,v,v];';
   }
 
   CQ.builder = { build: build, highlightExpr: highlightExpr };

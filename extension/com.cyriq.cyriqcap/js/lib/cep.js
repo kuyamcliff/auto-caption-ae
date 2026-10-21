@@ -68,7 +68,18 @@
         else cp.spawn('xdg-open', [dir], { detached: true, shell: false });
       } catch (e) {}
     },
-    onThemeChange: function () {}
+    /** After Effects panel colour as #rrggbb (null outside AE). */
+    skin: function () {
+      try {
+        var env = JSON.parse(cep.getHostEnvironment());
+        var c = env.appSkinInfo.panelBackgroundColor.color;
+        var h = function (v) { v = Math.round(v); return (v < 16 ? '0' : '') + v.toString(16); };
+        return '#' + h(c.red) + h(c.green) + h(c.blue);
+      } catch (e) { return null; }
+    },
+    onThemeChange: function (fn) {
+      try { if (cep) cep.addEventListener('com.adobe.csxs.events.ThemeColorChanged', fn); } catch (e) {}
+    }
   };
 
   CQ.host = host;
