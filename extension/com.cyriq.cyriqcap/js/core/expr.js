@@ -115,6 +115,10 @@
     if (phase === 'hold') {
       s += 'res=1;\n';
     }
+    if (phase === 'karaoke') {
+      // preview helper: one unit highlighted at a time, stepping every `step` seconds
+      s += 'res=(Math.floor(Math.max(0,tin)/' + num(t.step || 0.4, 0.4) + ')%N)===I?1:0;\n';
+    }
     if (phase === 'drift') {
       // slow linear drift across the whole life of the layer
       s += 'res=cl(tin/Math.max(0.01,outPoint-inPoint));\n';

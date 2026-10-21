@@ -425,6 +425,16 @@
       var pad = e.pad || [30, 16];
       var x = b.x - pad[0], y = b.y - pad[1], w = b.w + pad[0] * 2, h = b.h + pad[1] * 2;
       switch (e.type) {
+        case 'captionBox': {
+          ctx.globalAlpha = (e.opacity == null ? 0.65 : e.opacity) * outK * Math.min(1, cl(lt / 0.12));
+          ctx.fillStyle = col;
+          var rr = Math.min(e.round || 0, h / 2, w / 2);
+          ctx.beginPath();
+          ctx.moveTo(x + rr, y); ctx.lineTo(x + w - rr, y); ctx.quadraticCurveTo(x + w, y, x + w, y + rr); ctx.lineTo(x + w, y + h - rr);
+          ctx.quadraticCurveTo(x + w, y + h, x + w - rr, y + h); ctx.lineTo(x + rr, y + h); ctx.quadraticCurveTo(x, y + h, x, y + h - rr);
+          ctx.lineTo(x, y + rr); ctx.quadraticCurveTo(x, y, x + rr, y); ctx.closePath(); ctx.fill();
+          break;
+        }
         case 'box': {
           var kk = expoOut((lt - dl) / d);
           ctx.fillStyle = col;
@@ -588,7 +598,7 @@
     positions(L);
 
     // fit long text into the frame
-    var fit = Math.min(1, (VW * 0.86) / Math.max(1, L.box.w), (VH * 0.6) / Math.max(1, L.box.h));
+    var fit = Math.min(1, (VW * (o.fitWidth || 0.86)) / Math.max(1, L.box.w), (VH * 0.6) / Math.max(1, L.box.h));
     var ls = fit;
 
     // layer transform (scale punch, tilt) from layer expressions
@@ -616,7 +626,7 @@
     var env = { t: t, inP: inP, outP: outP, scale: scale, ls: ls * lscale, speed: speed };
 
     // shape layers drawn behind
-    var behind = { box: 1, echoRows: 1, outlineBox: 0 };
+    var behind = { box: 1, echoRows: 1, captionBox: 1, outlineBox: 0 };
     var pBehind = { extras: (p.extras || []).filter(function (e) { return behind[e.type]; }) };
     extras(lc, pBehind, L, env);
 
