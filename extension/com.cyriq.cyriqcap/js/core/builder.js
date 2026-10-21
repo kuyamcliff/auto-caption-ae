@@ -22,8 +22,36 @@
     return o;
   }
 
-  /** Layer-level expression with progress helpers. */
-  function L(opts, code) { return TAG + X.layerExpression(opts, code); }
+  // keyframe source for the layer being built (set in build())
+  var ENV = null, ENVP = null;
+
+  /** Layer-level expression with progress helpers (on the text layer itself). */
+  function L(opts, code, env) { return TAG + X.layerExpression(opts, code, env || ENV); }
+  /** Same, on a helper layer parented to the text layer. */
+  function LP(opts, code) { return L(opts, code, ENVP); }
+
+  /** Total in/out animation time of a preset, in seconds (after speed). */
+  function totals(p, speed) {
+    var inT = 0, outT = 0;
+    CQ.presets.normalize(p).forEach(function (a) {
+      var t = a.t || {};
+      if (t.phase === 'in' || t.phase === 'both' || !t.phase) inT = Math.max(inT, (t.dur || 0.8) + (t.delay || 0));
+      if (t.phase === 'out' || t.phase === 'both' || !t.phase) outT = Math.max(outT, t.outDur || t.dur || 0.8);
+    });
+    (p.extras || []).forEach(function (e) { inT = Math.max(inT, (e.delay || 0) + (e.dur || 0.5)); outT = Math.max(outT, 0.4); });
+    (p.fx || []).forEach(function (f) {
+      if (f.fx === 'burn') { inT = Math.max(inT, f.dur || 0.9); outT = Math.max(outT, f.outDur || 0.9); }
+      if (f.fx === 'mosaic') { inT = Math.max(inT, f.dur || 0.7); outT = Math.max(outT, (f.dur || 0.7) * 0.7); }
+      if (f.fx === 'shatter') outT = Math.max(outT, f.outDur || 1.2);
+      if (f.fx === 'wave') { inT = Math.max(inT, f.settle || 1.2); outT = Math.max(outT, f.settle || 1.2); }
+      if (f.fx === 'sliceJitter' || f.fx === 'rgbSplit') inT = Math.max(inT, f.until || 0.7);
+    });
+    if (p.write) inT = Math.max(inT, p.write.dur);
+    if (p.layer && p.layer.scale) inT = Math.max(inT, p.layer.scale.dur || 0.4);
+    if (p.layer && p.layer.rotation) inT = Math.max(inT, p.layer.rotation.keys[1][0]);
+    if (p.slices) { inT = Math.max(inT, p.slices.dur || 0.8); outT = Math.max(outT, 0.5); }
+    return { inT: Math.max(0.04, inT / speed), outT: Math.max(0.04, outT / speed) };
+  }
 
   /**
    * options = {
@@ -37,6 +65,9 @@
     var p = clone(preset);
     var st = p.style || {};
     var out = { id: p.id, name: p.name, needs: p.needs || [], plugins: {}, anims: [], fx: [], extras: [], layer: {} };
+    out.timing = totals(p, speed);
+    ENV = { ae: true, inT: out.timing.inT, outT: out.timing.outT, src: 'self' };
+    ENVP = { ae: true, inT: out.timing.inT, outT: out.timing.outT, src: 'parent' };
 
     (p.needs || []).forEach(function (k) { out.plugins[k] = CQ.presets.PLUGINS[k]; });
 
@@ -58,13 +89,13 @@
       var t = scaleTiming(a.t, speed);
       var props = clone(a.props);
       if (props.fill && o.useColors === false) return; // colour animators follow the user's colours
-      out.anims.push({ based: a.based, props: props, expr: X.selectorExpression(t), label: (a.label || 'Anim ' + (i + 1)) });
+      out.anims.push({ based: a.based, props: props, expr: X.selectorExpression(t, ENV), label: (a.label || 'Anim ' + (i + 1)) });
     });
     // per-line colours (e.g. white first line, accent second line)
     if (st.lineColors && o.useColors !== false) {
       st.lineColors.forEach(function (c, li) {
         if (!c || (o.fill && li === st.lineColors.length - 1)) return;
-        out.anims.unshift({ based: 'lines', props: { fill: c }, expr: X.selectorExpression({ phase: 'hold', select: { mod: 1000, eq: li } }), label: 'Line ' + (li + 1) + ' colour' });
+        out.anims.unshift({ based: 'lines', props: { fill: c }, expr: X.selectorExpression({ phase: 'hold', select: { mod: 1000, eq: li } }, ENV), label: 'Line ' + (li + 1) + ' colour' });
       });
     }
 
@@ -152,51 +183,51 @@
     var lo = { delay: dl, dur: d, outDur: 0.4 / speed, ease: 'expoOut' };
     var C = 'var cx=r.left+r.width/2,cy=r.top+r.height/2,H=thisComp.height/1080;\n';
     var x = { type: e.type, color: color, width: e.width };
-    var fadeOut = L({ dur: 0.01, outDur: 0.4 / speed }, 'lt<0?0:100*pout;');
+    var fadeOut = LP({ dur: 0.01, outDur: 0.4 / speed }, 'lt<0?0:100*pout;');
     switch (e.type) {
       case 'box':
-        x.sizeExpr = X.layerCore(lo) + '[(r.width+2*' + px + ')*pin*pout,(r.height+2*' + py + ')*Math.min(1,pin*1.6)*pout];';
+        x.sizeExpr = X.layerCore(lo, ENVP) + '[(r.width+2*' + px + ')*pin*pout,(r.height+2*' + py + ')*Math.min(1,pin*1.6)*pout];';
         x.posExpr = '[r.left+r.width/2,r.top+r.height/2];';
         break;
       case 'outlineBox':
         x.sizeExpr = '[r.width+2*' + px + ',r.height+2*' + py + '];';
         x.posExpr = '[r.left+r.width/2,r.top+r.height/2];';
-        x.opacityExpr = L({ dur: d * 0.3, outDur: 0.4 / speed }, '100*pin*pout;');
+        x.opacityExpr = LP({ dur: d * 0.3, outDur: 0.4 / speed }, '100*pin*pout;');
         break;
       case 'sweepBlock':
-        x.sizeExpr = X.layerCore({ dur: 1 }) + 'function e(q){q=q<0?0:q>1?1:q;return 1-Math.pow(1-q,3);}\nvar D=' + n(d) + ',W=r.width+2*' + px + ';\nvar e1=e((lt-' + n(dl) + ')/(D*0.5)),e2=e((lt-' + n(dl) + '-D*0.5)/(D*0.5));\n[Math.max(0,W*(e1-e2)),r.height+2*' + py + '];';
-        x.posExpr = X.layerCore({ dur: 1 }) + 'function e(q){q=q<0?0:q>1?1:q;return 1-Math.pow(1-q,3);}\nvar D=' + n(d) + ',W=r.width+2*' + px + ';\nvar e1=e((lt-' + n(dl) + ')/(D*0.5)),e2=e((lt-' + n(dl) + '-D*0.5)/(D*0.5));\n[r.left-' + px + '+W*e2+W*(e1-e2)/2,r.top+r.height/2];';
+        x.sizeExpr = X.layerCore({ dur: 1 }, ENVP) + 'function e(q){q=q<0?0:q>1?1:q;return 1-Math.pow(1-q,3);}\nvar D=' + n(d) + ',W=r.width+2*' + px + ';\nvar e1=e((lt-' + n(dl) + ')/(D*0.5)),e2=e((lt-' + n(dl) + '-D*0.5)/(D*0.5));\n[Math.max(0,W*(e1-e2)),r.height+2*' + py + '];';
+        x.posExpr = X.layerCore({ dur: 1 }, ENVP) + 'function e(q){q=q<0?0:q>1?1:q;return 1-Math.pow(1-q,3);}\nvar D=' + n(d) + ',W=r.width+2*' + px + ';\nvar e1=e((lt-' + n(dl) + ')/(D*0.5)),e2=e((lt-' + n(dl) + '-D*0.5)/(D*0.5));\n[r.left-' + px + '+W*e2+W*(e1-e2)/2,r.top+r.height/2];';
         break;
       case 'spinLine':
         x.paths = [C + 'var len=r.width/2+40*H;\ncreatePath([[cx-len,cy],[cx+len,cy]],[],[],false);'];
         x.anchorExpr = TAG + 'var L=thisLayer.parent;var r=L.sourceRectAtTime(time,false);[r.left+r.width/2,r.top+r.height/2];';
-        x.rotationExpr = L(lo, '-(1-pin)*160;');
-        x.opacityExpr = L({ dur: d }, '(lt>=0&&lt<' + n(d) + ')?100:0;');
+        x.rotationExpr = LP(lo, '-(1-pin)*160;');
+        x.opacityExpr = LP({ dur: d }, '(lt>=0&&lt<' + n(d) + ')?100:0;');
         break;
       case 'line':
       case 'dashline':
-        x.paths = [X.layerCore(lo) + C + 'var y=' + (e.at === 'top' ? 'r.top-0.15*r.height' : 'r.top+r.height+' + n(e.type === 'dashline' ? 18 : 15) + '*H') + ';\nvar w=r.width*' + (e.type === 'dashline' ? '0.8' : '0.75') + '*pin/2;\ncreatePath([[cx-w,y],[cx+w,y]],[],[],false);'];
+        x.paths = [X.layerCore(lo, ENVP) + C + 'var y=' + (e.at === 'top' ? 'r.top-0.15*r.height' : 'r.top+r.height+' + n(e.type === 'dashline' ? 18 : 15) + '*H') + ';\nvar w=r.width*' + (e.type === 'dashline' ? '0.8' : '0.75') + '*pin/2;\ncreatePath([[cx-w,y],[cx+w,y]],[],[],false);'];
         x.opacityExpr = fadeOut;
         break;
       case 'swoosh':
         x.paths = [C + 'var y=r.top+r.height+20*H,x0=cx-r.width*0.4,x1=cx+r.width*0.4;\ncreatePath([[x0,y],[x1,y-6*H]],[[0,0],[-r.width*0.3,14*H]],[[r.width*0.3,10*H],[0,0]],false);'];
-        x.trimExpr = L(lo, '100*pin;');
+        x.trimExpr = LP(lo, '100*pin;');
         x.opacityExpr = fadeOut;
         break;
       case 'drip':
         x.fill = true;
-        x.paths = [X.layerCore({ delay: dl, dur: d, ease: 'linear' }) + C + 'var X0=r.left+r.width*' + n(e.at || 0.3) + ',top=r.top+r.height*0.92,wd=' + n(e.width || 6) + '*H;\nvar k=pin<=0?0:Math.sin(pin*Math.PI)*0.5+0.5;var len=' + n(e.len || 60) + '*H*k*Math.min(1,pin*3);\ncreatePath([[X0-wd/2,top],[X0+wd/2,top],[X0+wd/2,top+len],[X0,top+len+wd/2],[X0-wd/2,top+len]],[],[],true);'];
+        x.paths = [X.layerCore({ delay: dl, dur: d, ease: 'linear' }, ENVP) + C + 'var X0=r.left+r.width*' + n(e.at || 0.3) + ',top=r.top+r.height*0.92,wd=' + n(e.width || 6) + '*H;\nvar k=pin<=0?0:Math.sin(pin*Math.PI)*0.5+0.5;var len=' + n(e.len || 60) + '*H*k*Math.min(1,pin*3);\ncreatePath([[X0-wd/2,top],[X0+wd/2,top],[X0+wd/2,top+len],[X0,top+len+wd/2],[X0-wd/2,top+len]],[],[],true);'];
         x.opacityExpr = fadeOut;
         break;
       case 'chevrons':
         x.paths = [0, 1, 2].map(function (i) {
-          return X.layerCore(lo) + C + 'var s=r.height*0.45,y=r.top-s*0.6-' + i + '*s*0.45*pin;\ncreatePath([[cx-s*0.8,y+s*0.45],[cx,y],[cx+s*0.8,y+s*0.45]],[],[],false);';
+          return X.layerCore(lo, ENVP) + C + 'var s=r.height*0.45,y=r.top-s*0.6-' + i + '*s*0.45*pin;\ncreatePath([[cx-s*0.8,y+s*0.45],[cx,y],[cx+s*0.8,y+s*0.45]],[],[],false);';
         });
-        x.opacityExpr = L(lo, '100*pin*pout;');
+        x.opacityExpr = LP(lo, '100*pin*pout;');
         break;
       case 'brackets':
         x.paths = ['a', 'b'].map(function (w) {
-          var base = X.layerCore(lo) + C + 'var px=' + px + ',py=' + py + ',x0=r.left-px,y0=r.top-py,x1=r.left+r.width+px,y1=r.top+r.height+py;\nvar o=(1-pin)*60*H,arm=Math.min(x1-x0,y1-y0)*0.45*pin;\n';
+          var base = X.layerCore(lo, ENVP) + C + 'var px=' + px + ',py=' + py + ',x0=r.left-px,y0=r.top-py,x1=r.left+r.width+px,y1=r.top+r.height+py;\nvar o=(1-pin)*60*H,arm=Math.min(x1-x0,y1-y0)*0.45*pin;\n';
           return base + (w === 'a'
             ? 'createPath([[x0-o+arm,y0-o],[x0-o,y0-o],[x0-o,y0-o+arm]],[],[],false);'
             : 'createPath([[x1+o-arm,y1+o],[x1+o,y1+o],[x1+o,y1+o-arm]],[],[],false);');
@@ -207,18 +238,18 @@
         var cnt = e.count || 3;
         x.paths = [];
         for (var i = 0; i < cnt; i++) {
-          x.paths.push(X.layerCore({ delay: dl, dur: d, ease: 'expoOut' }) + C + 'var lx=r.left+r.width*' + n((i + 0.5) / cnt) + ';\nvar top=cy-thisComp.height,bot=top+thisComp.height*2*pin;\ncreatePath([[lx,top],[lx,bot]],[],[],false);');
+          x.paths.push(X.layerCore({ delay: dl, dur: d, ease: 'expoOut' }, ENVP) + C + 'var lx=r.left+r.width*' + n((i + 0.5) / cnt) + ';\nvar top=cy-thisComp.height,bot=top+thisComp.height*2*pin;\ncreatePath([[lx,top],[lx,bot]],[],[],false);');
         }
         x.width = 6;
         x.glow = true;
-        x.opacityExpr = L({ delay: dl, dur: d, ease: 'linear' }, 'lt<0?0:100*(1-pin);');
+        x.opacityExpr = LP({ delay: dl, dur: d, ease: 'linear' }, 'lt<0?0:100*(1-pin);');
         break;
       }
       case 'dashes': {
         // same text on a copy, every glyph shown as a dash until the real letter appears
         var src = (p.anims || [])[0];
         var t = scaleTiming(src ? src.t : {}, speed);
-        var inv = X.amountCore(t) + 'var v=(1-res)*100;\n[v,v,v];';
+        var inv = X.amountCore(t, ENVP) + 'var v=(1-res)*100;\n[v,v,v];';
         x.expr = inv;
         x.text = null;
         x.dash = true;
@@ -230,9 +261,9 @@
         for (var rr = -rows; rr <= rows; rr++) {
           if (rr === 0) continue;
           var dir = rr % 2 ? 1 : -1;
-          x.rows.push(L({ delay: dl, dur: d, ease: 'cubicOut' }, 'var r=thisLayer.parent.sourceRectAtTime(time,false);\nvar sh=' + dir + '*((1-pin)*r.width*0.5+lt*40*thisComp.height/1080);\n[value[0]+sh,value[1]+' + rr + '*r.height*1.25];'));
+          x.rows.push(LP({ delay: dl, dur: d, ease: 'cubicOut' }, 'var r=thisLayer.parent.sourceRectAtTime(time,false);\nvar sh=' + dir + '*((1-pin)*r.width*0.5+lt*40*thisComp.height/1080);\n[value[0]+sh,value[1]+' + rr + '*r.height*1.25];'));
         }
-        x.opacityExpr = L({ delay: dl, dur: d, outDur: 0.4 / speed }, '100*pin*pout;');
+        x.opacityExpr = LP({ delay: dl, dur: d, outDur: 0.4 / speed }, '100*pin*pout;');
         break;
       }
       default:

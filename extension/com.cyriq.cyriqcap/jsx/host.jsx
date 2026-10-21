@@ -667,6 +667,37 @@ CQ.buildExtra = function (comp, layer, e, scale, warnings) {
 };
 
 /* ------------------------------------------------------------------ */
+/* Timing keyframes                                                     */
+/* ------------------------------------------------------------------ */
+/**
+ * Two slider controls drive every CyriqCap animation on a layer:
+ *   "CQ In"  : 0 -> 100 from the layer's in-point
+ *   "CQ Out" : 0 -> 100 ending at the layer's out-point
+ * The keyframes always sit at the start and end of that layer, so each
+ * selected layer animates on its own timing. Move them to retime.
+ */
+CQ.addTimingSliders = function (layer, timing, warnings) {
+  var inT = timing && timing.inT ? timing.inT : 0.5, outT = timing && timing.outT ? timing.outT : 0.5;
+  var a = layer.inPoint, b = layer.outPoint, len = Math.max(0.001, b - a);
+  // short layers (fast captions): squeeze both animations to fit
+  var k = Math.min(1, (len * 0.98) / (inT + outT));
+  var fps = 1 / layer.containingComp.frameDuration;
+  function snap(t) { return Math.round(t * fps) / fps; }
+  var defs = [['In', a, snap(a + inT * k)], ['Out', snap(b - outT * k), b]];
+  for (var i = 0; i < defs.length; i++) {
+    var fx = CQ.addEffect(layer, 'ADBE Slider Control', defs[i][0], warnings);
+    if (!fx) continue;
+    var sl = CQ.fxParam(fx, 1, 'Slider');
+    try {
+      var t0 = defs[i][1], t1 = Math.max(defs[i][1] + 0.001, defs[i][2]);
+      sl.setValueAtTime(t0, 0);
+      sl.setValueAtTime(t1, 100);
+      for (var kk = 1; kk <= sl.numKeys; kk++) sl.setInterpolationTypeAtKey(kk, KeyframeInterpolationType.LINEAR, KeyframeInterpolationType.LINEAR);
+    } catch (e) { warnings.push('timing keys: ' + e.message); }
+  }
+};
+
+/* ------------------------------------------------------------------ */
 /* Apply a preset                                                       */
 /* ------------------------------------------------------------------ */
 CQ.applyToLayer = function (comp, layer, P, opts, warnings) {
@@ -674,6 +705,7 @@ CQ.applyToLayer = function (comp, layer, P, opts, warnings) {
   var i;
   CQ.clearPreset(layer, comp);
   if (P.style) CQ.styleText(layer, P.style, scale, warnings);
+  CQ.addTimingSliders(layer, P.timing, warnings);
 
   // character anchor at the vertical centre (rotations/scales look right)
   try { layer.property('ADBE Text Properties').property('ADBE Text More Options').property('ADBE Text Anchor Point Align').setValue([0, -50]); } catch (e) { warnings.push('grouping alignment: ' + e.message); }
@@ -717,10 +749,9 @@ CQ.applyToLayer = function (comp, layer, P, opts, warnings) {
         mk.property('ADBE Mask Shape').setValue(s2);
       };
       var bottomCopy = CQ.duplicateText(comp, layer, 'Slice', null);
-      // the copy keeps the same animators as the original
+      // the copy keeps the same animators and timing keys as the original
+      CQ.addTimingSliders(bottomCopy, P.timing, warnings);
       for (i = 0; i < P.anims.length; i++) CQ.addAnimator(bottomCopy, P.anims[i], i + 1, scale, warnings);
-      bottomCopy.parent = null;
-      bottomCopy.property('ADBE Transform Group').property('ADBE Position').setValue(tr.property('ADBE Position').value);
       half(layer, true); half(bottomCopy, false);
       CQ.setExpr(tr.property('ADBE Position'), P.slices.exprA, warnings, 'slice A');
       CQ.setExpr(bottomCopy.property('ADBE Transform Group').property('ADBE Position'), P.slices.exprB, warnings, 'slice B');
@@ -903,7 +934,10 @@ CQ.createCaptions = function (json) {
       layer.outPoint = end;
       // position: anchor at the text centre so alignment is stable
       try {
-        CQ.setExpr(layer.property('ADBE Transform Group').property('ADBE Anchor Point'), '/*CQ*/var r=sourceRectAtTime(time,false);[r.left+r.width/2,r.top+r.height/2];', w, 'anchor');
+        var av = P.anchor ? P.anchor.v : 'middle', ah = P.anchor ? P.anchor.h : 'center';
+        var ax = ah === 'left' ? 'r.left' : ah === 'right' ? 'r.left+r.width' : 'r.left+r.width/2';
+        var ay = av === 'top' ? 'r.top' : av === 'bottom' ? 'r.top+r.height' : 'r.top+r.height/2';
+        CQ.setExpr(layer.property('ADBE Transform Group').property('ADBE Anchor Point'), '/*CQ*/var r=sourceRectAtTime(inPoint+(outPoint-inPoint)/2,false);[' + ax + ',' + ay + '];', w, 'anchor');
         layer.property('ADBE Transform Group').property('ADBE Position').setValue([P.position[0], P.position[1]]);
       } catch (e1) { w.push('position: ' + e1.message); }
       if (P.highlight && cap.highlightExpr) {

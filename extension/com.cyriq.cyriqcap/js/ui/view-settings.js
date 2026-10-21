@@ -1,182 +1,191 @@
-/* Settings tab + first-run onboarding (API folder). */
+/* Settings tab + setup screen (API folder, file-by-file check). */
 (function (root) {
   'use strict';
   var CQ = root.CQ;
   var U = CQ.ui, el = U.el;
   var V = {};
 
-  var GROUP_NAMES = [
-    ['ffmpeg', 'Audio converter'],
-    ['whispercpp', 'Whisper.cpp engine'],
-    ['model-ggml-small', 'Whisper Small model'],
-    ['python', 'Python runtime'],
-    ['whisperx', 'WhisperX engine'],
-    ['model-faster-whisper-small', 'WhisperX Small model'],
-    ['model-align-en', 'Word alignment (English)'],
-    ['data', 'Language data']
+  var GROUPS = [
+    ['ffmpeg', 'Audio tools'],
+    ['whispercpp', 'Speech engine'],
+    ['model-ggml-small', 'Speech model'],
+    ['python', 'Runtime'],
+    ['whisperx', 'Word timing engine'],
+    ['model-faster-whisper-small', 'Speech model, precise'],
+    ['model-align-en', 'Word alignment'],
+    ['data', 'Language data'],
+    ['docs', 'Licenses']
   ];
 
-  function fmtBytes(n) { if (n > 1e9) return (n / 1e9).toFixed(2) + ' GB'; if (n > 1e6) return (n / 1e6).toFixed(0) + ' MB'; return Math.round(n / 1e3) + ' KB'; }
+  function fmt(n) { return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ','); }
 
-  function checkRows(res, container) {
-    container.innerHTML = '';
-    GROUP_NAMES.forEach(function (g, i) {
-      var info = res && res.groups ? res.groups[g[0]] : null;
-      var cls = 'check', st;
-      if (!res) { st = el('span', { class: 'spin' }); }
-      else if (info && info.ok) { cls += ' ok'; st = el('span', { html: CQ.icons.check }); }
-      else { cls += ' bad'; st = el('span', { html: CQ.icons.x }); }
-      var row = el('div', { class: cls }, [el('span', { class: 'st' }, [st]), el('span', { class: 'nm', text: g[1] }), el('span', { class: 'val', text: info ? info.files + ' file' + (info.files > 1 ? 's' : '') : (res ? 'missing' : '') })]);
-      row.style.animationDelay = i * 0.05 + 's';
-      container.appendChild(row);
+  /**
+   * File check UI. Returns {el, run(dir) -> Promise<result>}.
+   * Shows every file being checked, a per-group status and the totals.
+   */
+  function fileCheck() {
+    var rows = {}, list = el('div', { class: 'fc' });
+    GROUPS.forEach(function (g) {
+      var st = el('span', { class: 'st', html: CQ.icons.stop });
+      var c = el('span', { class: 'c' });
+      var r = el('div', { class: 'g' }, [st, el('span', { class: 'n', text: g[1] }), c]);
+      rows[g[0]] = { row: r, st: st, c: c, done: 0, total: 0, bad: 0 };
+      list.appendChild(r);
     });
+    var count = el('div', { class: 'fcount' }, [el('span', { text: 'Checking files' }), el('span', { text: '' })]);
+    var bar = el('div', { class: 'bar' }, [el('i')]);
+    var cur = el('div', { class: 'fcur mono' });
+    var missing = el('div', { class: 'fmissing hidden' });
+    var box = el('div', null, [count, bar, cur, list, missing]);
+
+    function setRow(g, state) {
+      var r = rows[g]; if (!r) return;
+      r.row.className = 'g ' + state;
+      r.st.innerHTML = CQ.icons[state === 'run' ? 'spin' : state === 'ok' ? 'ok' : state === 'bad' ? 'bad' : 'stop'];
+    }
+
+    function run(dir) {
+      missing.classList.add('hidden'); missing.innerHTML = '';
+      Object.keys(rows).forEach(function (g) { rows[g].done = 0; rows[g].bad = 0; rows[g].total = 0; rows[g].c.textContent = ''; setRow(g, ''); });
+      count.firstChild.textContent = 'Checking files';
+      var m = CQ.services.hasNode ? CQ.services.Api.readManifest(dir) : CQ.mockHost.manifest();
+      if (m && m.files) m.files.forEach(function (f) { if (rows[f.group]) rows[f.group].total++; });
+      var lastG = null, bad = [];
+      var started = Date.now();
+      function onFile(i, total, p, g) {
+        if (g !== lastG) { if (lastG && rows[lastG]) setRow(lastG, rows[lastG].bad ? 'bad' : 'ok'); setRow(g, 'run'); lastG = g; }
+        var r = rows[g];
+        if (r) { r.done++; r.c.textContent = fmt(r.done) + ' / ' + fmt(r.total); }
+        if (i % 7 === 0 || i === total) { count.lastChild.textContent = fmt(i) + ' / ' + fmt(total); cur.textContent = p; bar.firstChild.style.width = (i / total * 100).toFixed(1) + '%'; }
+      }
+      function onFail(p, g) { if (rows[g]) rows[g].bad++; bad.push(p); }
+      return CQ.app.verifyApi(dir, true, null, onFile, onFail).then(function (res) {
+        if (lastG && rows[lastG]) setRow(lastG, rows[lastG].bad ? 'bad' : 'ok');
+        Object.keys(rows).forEach(function (g) {
+          var info = res.groups ? res.groups[g] : null;
+          if (!info) { setRow(g, 'bad'); rows[g].c.textContent = 'missing'; }
+          else setRow(g, info.ok ? 'ok' : 'bad');
+        });
+        bar.firstChild.style.width = '100%';
+        var n = (res.missing || []).length + (res.wrongSize || []).length + (res.badHash || []).length;
+        var total = m && m.files ? m.files.length : 0;
+        cur.textContent = '';
+        if (res.problems.indexOf('NOT_API_FOLDER') >= 0 || res.problems.indexOf('FOLDER_NOT_FOUND') >= 0) count.firstChild.textContent = 'This is not a CyriqCap API folder';
+        else if (res.problems.indexOf('MANIFEST_DAMAGED') >= 0) count.firstChild.textContent = 'The API folder is damaged';
+        else if (n) {
+          count.firstChild.textContent = fmt(n) + ' file' + (n > 1 ? 's' : '') + ' missing or damaged';
+          missing.classList.remove('hidden');
+          (res.missing || []).concat(res.wrongSize || [], res.badHash || []).slice(0, 30).forEach(function (p) { missing.appendChild(el('div', { text: p })); });
+        } else count.firstChild.textContent = 'All ' + fmt(total) + ' files verified';
+        count.lastChild.textContent = ((Date.now() - started) / 1000).toFixed(1) + ' s';
+        return res;
+      });
+    }
+    return { el: box, run: run };
   }
 
-  function problemText(res) {
-    if (!res) return '';
-    if (res.problems.indexOf('FOLDER_NOT_FOUND') >= 0) return 'Folder not found.';
-    if (res.problems.indexOf('NOT_API_FOLDER') >= 0) return 'This is not a CyriqCap API folder (cyriqcap-api.json is missing).';
-    if (res.problems.indexOf('MANIFEST_DAMAGED') >= 0) return 'The API folder manifest is damaged.';
-    var n = res.missing.length + res.wrongSize.length + res.badHash.length;
-    if (n) return n + ' file' + (n > 1 ? 's are' : ' is') + ' missing or damaged.';
-    return '';
-  }
-
-  /* ---------------------------------------------------------- onboarding */
-  function onboarding() {
+  /* ---------------------------------------------------------- setup screen */
+  function setup() {
     return new Promise(function (resolve) {
-      var path = CQ.app.apiDir || '';
-      var checks = el('div', { class: 'checks hidden' });
-      var pathBox = el('div', { class: 'path-box hidden' });
-      var msg = el('div', { class: 'sub hidden', style: { color: 'var(--err)' } });
-      var choose = el('button', { class: 'btn primary block' }, [U.icon('folder'), 'Choose API Folder']);
-      var cont = el('button', { class: 'btn block hidden', style: { marginTop: '.5rem' } }, ['Continue']);
-      var bar = el('div', { class: 'bar hidden', style: { marginBottom: '.6rem' } }, [el('i')]);
+      var dir = CQ.app.apiDir || '';
+      var check = fileCheck();
+      var checkWrap = el('div', { class: 'hidden' }, [check.el]);
+      var pathEl = el('div', { class: 'pathline hidden' });
+      var choose = U.btn('Choose API Folder', { cls: 'primary block', icon: 'folder' });
+      var cont = U.btn('Continue', { cls: 'primary block hidden' });
+      var again = el('button', { class: 'link hidden', text: 'Choose a different folder', style: { marginTop: '.6rem' } });
       var box = el('div', { class: 'box' }, [
-        el('div', { class: 'logo', html: CQ.icons.mark }),
-        el('h1', null, ['Cyriq', el('b', { text: 'Cap' })]),
-        el('div', { class: 'sub', text: 'Auto captions & text animation' }),
-        pathBox, bar, checks, msg, choose, cont
+        el('div', { class: 'hd' }, [el('span', { class: 'mark', html: CQ.icons.mark }), el('div', null, [el('b', { text: 'Set up CyriqCap' }), el('small', { text: 'Select the CyriqCap-API folder you unzipped.' })])]),
+        pathEl, checkWrap, choose, cont, again
       ]);
-      var ov = el('div', { id: 'onboard' }, [box]);
+      var ov = el('div', { id: 'setup' }, [box]);
       document.body.appendChild(ov);
-
-      function run(dir) {
-        pathBox.textContent = dir; pathBox.classList.remove('hidden');
-        checks.classList.remove('hidden'); checkRows(null, checks);
-        msg.classList.add('hidden'); cont.classList.add('hidden');
-        choose.classList.add('loading');
-        bar.classList.remove('hidden');
-        CQ.app.verifyApi(dir, true, function (p) { bar.firstChild.style.width = Math.round(p * 100) + '%'; }).then(function (res) {
-          choose.classList.remove('loading');
-          bar.classList.add('hidden');
-          checkRows(res, checks);
-          var usable = res.engines.whispercpp || res.engines.whisperx;
-          var pt = problemText(res);
-          if (pt) { msg.textContent = pt; msg.classList.remove('hidden'); }
-          choose.lastChild.textContent = usable ? 'Choose Another Folder' : 'Choose API Folder';
-          choose.className = usable ? 'btn ghost block' : 'btn primary block';
-          if (usable) { cont.classList.remove('hidden'); cont.className = 'btn primary block'; cont.style.marginTop = '.5rem'; }
+      function start(d) {
+        dir = d; pathEl.textContent = d; pathEl.classList.remove('hidden'); checkWrap.classList.remove('hidden');
+        choose.classList.add('hidden'); cont.classList.add('hidden'); again.classList.add('hidden');
+        check.run(d).then(function (res) {
+          var usable = res.engines && (res.engines.whispercpp || res.engines.whisperx);
+          if (usable) cont.classList.remove('hidden');
+          else { choose.classList.remove('hidden'); choose.lastChild.textContent = 'Choose Another Folder'; }
+          if (usable) again.classList.remove('hidden');
         });
       }
-      choose.addEventListener('click', function () {
-        CQ.host.chooseFolder('Choose the CyriqCap API folder', path).then(function (dir) { if (dir) { path = dir; run(dir); } });
-      });
-      cont.addEventListener('click', function () {
-        ov.style.transition = 'opacity .3s'; ov.style.opacity = '0';
-        setTimeout(function () { if (ov.parentNode) ov.parentNode.removeChild(ov); resolve(); }, 300);
-      });
-      if (path) run(path);
+      function pick() { CQ.host.chooseFolder('Select the CyriqCap-API folder', dir).then(function (d) { if (d) start(d); }); }
+      choose.addEventListener('click', pick);
+      again.addEventListener('click', pick);
+      cont.addEventListener('click', function () { if (ov.parentNode) ov.parentNode.removeChild(ov); CQ.modelsUI.refresh(); resolve(); });
+      if (dir) start(dir);
     });
   }
 
   /* ---------------------------------------------------------- settings view */
-  function renderApi() {
-    var res = CQ.app.api;
-    V.apiPath.textContent = CQ.app.apiDir || 'Not set';
-    V.apiChecks.innerHTML = '';
-    checkRows(res, V.apiChecks);
-    V.apiMsg.textContent = problemText(res);
-    V.apiVer.textContent = res && res.version ? 'v' + res.version : '';
-  }
-
   function renderFonts() {
-    if (!CQ.services.hasNode) return;
-    var st;
-    try { st = CQ.services.Fonts.status(CQ.host.extensionPath()); } catch (e) { st = []; }
-    V.fontList.innerHTML = '';
+    V.fonts.innerHTML = '';
+    var st = [];
+    if (CQ.services.hasNode) { try { st = CQ.services.Fonts.status(CQ.host.extensionPath()); } catch (e) { st = []; } }
+    else st = Object.keys(CQ.presets.FONTS).map(function (k) { return { file: CQ.presets.FONTS[k].file, installed: true }; });
     var n = 0;
-    st.forEach(function (f) {
-      if (f.installed) n++;
-      V.fontList.appendChild(el('div', { class: 'font-item' }, [el('span', { text: f.file.replace(/\.(ttf|otf)$/i, '') }), el('i', { class: f.installed ? 'ok' : '' })]));
-    });
-    V.fontState.textContent = n + ' / ' + st.length;
-    V.fontState.className = 'badge ' + (n === st.length ? 'ok' : 'warn');
+    st.forEach(function (f) { if (f.installed) n++; V.fonts.appendChild(el('div', { class: f.installed ? 'on' : '' }, [U.svg(f.installed ? 'check' : 'stop'), f.file.replace(/\.(ttf|otf)$/i, '').replace(/-/g, ' ')])); });
+    V.fontState.textContent = n + ' of ' + st.length + ' installed';
   }
 
   function installFonts() {
-    V.fontBtn.classList.add('loading');
+    if (!CQ.services.hasNode) return;
+    V.fontBtn.setBusy(true);
     CQ.services.Fonts.install(CQ.host.extensionPath()).then(function (r) {
-      V.fontBtn.classList.remove('loading');
-      renderFonts();
-      if (r.failed.length) U.modal({ kind: 'warn', title: 'Some fonts were not installed', list: r.failed });
-      else U.modal({ kind: 'info', icon: 'font', title: 'Fonts installed', text: 'Restart After Effects once so the new fonts appear in the Character panel and in presets.' });
-    }, function (e) { V.fontBtn.classList.remove('loading'); U.modal({ kind: 'err', title: 'Font install failed', text: e.message }); });
+      V.fontBtn.setBusy(false); renderFonts();
+      if (r.failed.length) U.dialog({ kind: 'warn', title: 'Some fonts could not be installed', text: 'Close After Effects, then install them again.' });
+      else U.dialog({ title: 'Fonts installed', icon: 'check', text: 'Restart After Effects once so the fonts appear in the Character panel and in presets.' });
+    }, function () { V.fontBtn.setBusy(false); U.dialog({ kind: 'err', title: 'Fonts could not be installed', text: 'Close After Effects, then try again.' }); });
   }
 
-  function diagnostics() {
-    var a = CQ.app.api || {};
-    var lines = [
-      'CyriqCap ' + CQ.app.version, 'After Effects ' + (CQ.app.aeVersion || '?'), 'OS ' + (CQ.services.hasNode ? process.platform + ' ' + require('os').release() : 'n/a'),
-      'API ' + (a.version || '-') + ' ok=' + !!a.ok + ' engines=' + JSON.stringify(a.engines || {}),
-      'Missing: ' + (a.missing || []).length + ' Wrong size: ' + (a.wrongSize || []).length + ' Bad hash: ' + (a.badHash || []).length,
-      'Plug-ins: ' + JSON.stringify(CQ.app.plugins)
-    ];
-    return lines.join('\n');
+  function renderApi() {
+    if (!V.path) return;
+    V.path.textContent = CQ.app.apiDir || 'Not set';
+    var a = CQ.app.api;
+    V.apiState.textContent = !a ? '' : a.ok ? 'All files verified' : (a.engines && (a.engines.whispercpp || a.engines.whisperx)) ? 'Some files are missing' : 'Not usable';
+  }
+
+  function renderPlugins() {
+    if (!V.plugs) return;
+    V.plugs.innerHTML = '';
+    Object.keys(CQ.presets.PLUGINS).forEach(function (k) {
+      var pl = CQ.presets.PLUGINS[k], ok = CQ.app.plugins[k];
+      V.plugs.appendChild(el('div', { class: 'kv' }, [el('span', { class: 'k', text: pl.name }), el('span', { class: 'v', style: { color: ok ? 'var(--ok)' : 'var(--dim)' }, text: ok ? 'Installed' : 'Not found' })]));
+    });
+  }
+
+  function openCheck() {
+    var c = fileCheck();
+    U.dialog({ title: 'Check files', icon: 'filecheck', body: el('div', { style: { marginTop: '.6rem' } }, [c.el]), wide: true, actions: [{ label: 'Close', primary: true }] });
+    c.run(CQ.app.apiDir).then(function () { renderApi(); });
   }
 
   function build(rootEl) {
-    V.apiPath = el('div', { class: 'path-box' });
-    V.apiChecks = el('div', { class: 'checks' });
-    V.apiMsg = el('div', { class: 'lbl', style: { color: 'var(--err)', whiteSpace: 'normal' } });
-    V.apiVer = el('span', { class: 'badge info' });
-    var change = el('button', { class: 'btn', onclick: function () { CQ.host.chooseFolder('Choose the CyriqCap API folder', CQ.app.apiDir).then(function (d) { if (d) CQ.app.setApiDir(d); }); } }, [U.icon('folder'), 'Change']);
-    var recheck = el('button', { class: 'btn ghost', onclick: function () { recheck.classList.add('loading'); CQ.app.verifyApi(CQ.app.apiDir, true).then(function () { recheck.classList.remove('loading'); renderApi(); U.toast('ok', 'Check finished', problemText(CQ.app.api) || 'All files are present and intact.'); }); } }, [U.icon('shield'), 'Full check']);
-
-    V.fontList = el('div', { class: 'font-list' });
-    V.fontState = el('span', { class: 'badge' });
-    V.fontBtn = el('button', { class: 'btn primary', onclick: installFonts }, [U.icon('font'), 'Install Fonts']);
-
-    var plugList = el('div');
-    function renderPlugins() {
-      plugList.innerHTML = '';
-      Object.keys(CQ.presets.PLUGINS).forEach(function (k) {
-        var pl = CQ.presets.PLUGINS[k], ok = CQ.app.plugins[k];
-        plugList.appendChild(el('div', { class: 'kv' }, [el('span', { class: 'k', text: pl.name }), el('span', { class: 'badge ' + (ok ? 'ok' : 'warn'), text: ok ? 'Installed' : 'Not found' })]));
-      });
-    }
-    V.renderPlugins = renderPlugins;
-
-    rootEl.appendChild(el('div', { class: 'cap-layout' }, [
-      el('div', null, [
-        el('div', { class: 'card' }, [el('h3', null, [el('span', { class: 'grow', text: 'API folder' }), V.apiVer]), V.apiPath, el('div', { class: 'row' }, [change, recheck]), V.apiMsg, V.apiChecks]),
-        el('div', { class: 'card' }, [el('h3', null, [el('span', { class: 'grow', text: 'Plug-ins' }), el('button', { class: 'btn ghost', style: { height: '1.8rem' }, onclick: function () { CQ.app.scanPlugins(true).then(renderPlugins); } }, [U.icon('refresh'), 'Scan'])]), plugList])
-      ]),
-      el('div', null, [
-        el('div', { class: 'card' }, [el('h3', null, [el('span', { class: 'grow', text: 'Fonts' }), V.fontState]), el('div', { class: 'row' }, [V.fontBtn]), V.fontList]),
-        el('div', { class: 'card' }, [el('h3', { text: 'Diagnostics' }), el('div', { class: 'row' }, [
-          el('button', { class: 'btn', onclick: function () { CQ.host.openFolder(CQ.services.Log.dir()); } }, [U.icon('log'), 'Open logs']),
-          el('button', { class: 'btn ghost', onclick: function () { U.modal({ kind: 'info', title: 'Diagnostics', detail: diagnostics(), text: 'No transcript text or media paths are included.' }); } }, [U.icon('copy'), 'Show info'])
-        ])]),
-        el('div', { class: 'card' }, [el('h3', { text: 'About' }),
-          el('div', { class: 'kv' }, [el('span', { class: 'k', text: 'Version' }), el('span', { class: 'v', text: CQ.app.version })]),
-          el('div', { class: 'kv' }, [el('span', { class: 'k', text: 'Network' }), el('span', { class: 'v', text: 'Offline' })]),
-          el('div', { class: 'kv' }, [el('span', { class: 'k', text: 'Licenses' }), el('span', { class: 'v' }, [el('button', { class: 'btn ghost', style: { height: '1.7rem' }, onclick: function () { CQ.host.openFolder(require('path').join(CQ.host.extensionPath(), 'licenses')); } }, ['Open'])])])
-        ])
+    V.path = el('div', { class: 'pathline' });
+    V.apiState = el('span', { class: 'tag' });
+    V.fonts = el('div', { class: 'fonts' });
+    V.fontState = el('span', { class: 'tag' });
+    V.fontBtn = U.btn('Install Fonts', { icon: 'font', onClick: installFonts });
+    V.plugs = el('div');
+    rootEl.appendChild(el('div', { class: 'section' }, [
+      el('div', { class: 'title' }, ['API folder', el('span', { class: 'spacer' }), V.apiState]),
+      V.path,
+      el('div', { class: 'line' }, [
+        U.btn('Change', { icon: 'folder', onClick: function () { CQ.host.chooseFolder('Select the CyriqCap-API folder', CQ.app.apiDir).then(function (d) { if (d) { CQ.app.apiDir = d; setup(); } }); } }),
+        U.btn('Check Files', { icon: 'filecheck', onClick: openCheck })
       ])
+    ]));
+    rootEl.appendChild(el('div', { class: 'section' }, [el('div', { class: 'title', text: 'Models' }), CQ.modelsUI.section()]));
+    rootEl.appendChild(el('div', { class: 'section' }, [el('div', { class: 'title' }, ['Fonts', el('span', { class: 'spacer' }), V.fontState]), V.fontBtn, V.fonts]));
+    rootEl.appendChild(el('div', { class: 'section' }, [el('div', { class: 'title' }, ['Plug-ins', el('span', { class: 'spacer' }), el('button', { class: 'link', text: 'Scan again', onclick: function () { CQ.app.scanPlugins(true).then(function () { renderPlugins(); CQ.animate.refresh(); }); } })]), V.plugs]));
+    rootEl.appendChild(el('div', { class: 'section' }, [el('div', { class: 'title', text: 'About' }),
+      el('div', { class: 'kv' }, [el('span', { class: 'k', text: 'Version' }), el('span', { class: 'v', text: CQ.app.version })]),
+      el('div', { class: 'kv' }, [el('span', { class: 'k', text: 'Logs' }), el('span', { class: 'v' }, [el('button', { class: 'link', text: 'Open folder', onclick: function () { CQ.host.openFolder(CQ.services.Log.dir()); } })])]),
+      el('div', { class: 'kv' }, [el('span', { class: 'k', text: 'Licenses' }), el('span', { class: 'v' }, [el('button', { class: 'link', text: 'Open folder', onclick: function () { CQ.host.openFolder(require('path').join(CQ.host.extensionPath(), 'licenses')); } })])])
     ]));
     renderApi(); renderFonts(); renderPlugins();
   }
 
-  CQ.settings = { build: build, onboarding: onboarding, renderApi: function () { if (V.apiPath) renderApi(); }, renderPlugins: function () { if (V.renderPlugins) V.renderPlugins(); }, renderFonts: function () { if (V.fontList) renderFonts(); }, fmtBytes: fmtBytes };
+  CQ.settings = { build: build, setup: setup, onboarding: setup, renderApi: renderApi, renderPlugins: renderPlugins, renderFonts: function () { if (V.fonts) renderFonts(); } };
 })(typeof window !== 'undefined' ? window : global);

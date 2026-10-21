@@ -118,6 +118,23 @@ for (const p of presets.filter(x => (x.needs || []).length)) {
   assert.strictEqual(state.undo.filter(x => x.startsWith('begin')).length, 1, 'one undo group for all layers');
 }
 
+// keyframes sit at the start and end of EACH selected layer
+{
+  const state = { issues: [], expressions: [], undo: [] };
+  const { ctx, env } = loadHost(state);
+  const specs = [[0, 3], [2.5, 6], [7, 7.4]];
+  const ls = specs.map(([a, b], i) => { const l = env.comp.layers.addText('L' + i); l.selected = true; l.inPoint = a; l.outPoint = b; return l; });
+  const r = JSON.parse(ctx.CQ.applyPreset(JSON.stringify({ preset: CQ.builder.build(CQ.presets.byId('drop-bounce'), {}) })));
+  assert.ok(r.ok);
+  ls.forEach((l, i) => {
+    const fx = l.property('ADBE Effect Parade');
+    const kin = fx.property('CQ In').property(1)._keys, kout = fx.property('CQ Out').property(1)._keys;
+    assert.ok(Math.abs(kin[0][0] - l.inPoint) < 1e-6 && kin[0][1] === 0 && kin[1][1] === 100, 'In keys start at in-point of layer ' + i);
+    assert.ok(Math.abs(kout[1][0] - l.outPoint) < 1e-6 && kout[1][1] === 100, 'Out keys end at out-point of layer ' + i);
+    assert.ok(kin[1][0] <= kout[0][0] + 1e-6, 'in/out keys do not overlap on short layer ' + i);
+  });
+}
+
 // remove preset
 {
   const state = { issues: [], expressions: [], undo: [] };

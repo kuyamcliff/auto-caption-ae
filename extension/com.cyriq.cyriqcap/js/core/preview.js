@@ -133,20 +133,24 @@
     });
   }
 
-  function positions(L) {
+  function positions(L, justify) {
     // line widths include per-character tracking (centred paragraph, like AE)
     var lineW = [], i;
     for (i = 0; i < L.lines; i++) lineW[i] = 0;
     L.chars.forEach(function (c) { c.adv = c.w + L.tracking + c.s.trk / 1000 * L.size; lineW[c.line] += c.adv; });
-    var xs = [];
-    for (i = 0; i < L.lines; i++) xs[i] = -(lineW[i] - L.tracking) / 2;
+    var xs = [], maxW = 0;
+    for (i = 0; i < L.lines; i++) maxW = Math.max(maxW, lineW[i] - L.tracking);
+    for (i = 0; i < L.lines; i++) {
+      var lw = lineW[i] - L.tracking;
+      xs[i] = justify === 'left' ? -maxW / 2 : justify === 'right' ? maxW / 2 - lw : -lw / 2;
+    }
     var blockH = (L.lines - 1) * L.leading;
     L.chars.forEach(function (c) {
       c.x = xs[c.line] + c.w / 2; xs[c.line] += c.adv;
       c.y = -blockH / 2 + c.line * L.leading + L.capH / 2; // baseline
     });
     var minX = Infinity, maxX = -Infinity;
-    for (i = 0; i < L.lines; i++) { minX = Math.min(minX, -(lineW[i] - L.tracking) / 2); maxX = Math.max(maxX, (lineW[i] - L.tracking) / 2); }
+    minX = -maxW / 2; maxX = maxW / 2;
     L.box = { x: minX, y: -blockH / 2 - L.capH / 2, w: maxX - minX, h: blockH + L.capH };
     L.lineW = lineW;
   }
@@ -595,7 +599,7 @@
     var lc = lay.getContext('2d');
     var L = layout(lc, p, o);
     evaluate(p, L, t, inP, outP, speed);
-    positions(L);
+    positions(L, o.justify);
 
     // fit long text into the frame
     var fit = Math.min(1, (VW * (o.fitWidth || 0.86)) / Math.max(1, L.box.w), (VH * 0.6) / Math.max(1, L.box.h));
@@ -619,7 +623,14 @@
     if (o.position) { /* caption position preview */ }
 
     lc.save();
-    lc.translate(W / 2 + (o.offsetX || 0) * scale, H / 2 + (o.offsetY || 0) * scale);
+    var tx = VW / 2 + (o.offsetX || 0), ty = VH / 2 + (o.offsetY || 0);
+    if (o.place) {
+      // caption placement: box edge sits `margin` px from the frame edge
+      var mg = o.place.margin || 0, B = L.box, k2 = ls;
+      if (o.place.v === 'top') ty = mg - B.y * k2; else if (o.place.v === 'bottom') ty = VH - mg - (B.y + B.h) * k2; else ty = VH / 2 - (B.y + B.h / 2) * k2;
+      if (o.place.h === 'left') tx = mg - B.x * k2; else if (o.place.h === 'right') tx = VW - mg - (B.x + B.w) * k2; else tx = VW / 2 - (B.x + B.w / 2) * k2;
+    }
+    lc.translate(tx * scale, ty * scale);
     lc.scale(scale * ls * lscale, scale * ls * lscale);
     lc.rotate(lrot * Math.PI / 180);
 

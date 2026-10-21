@@ -1,0 +1,29 @@
+Third-party engines and models bundled in the CyriqCap API folder
+=================================================================
+
+Whisper Small (multilingual)
+  Model weights by OpenAI, released under the MIT License.
+  Source: https://github.com/openai/whisper
+  - models/ggml-small.bin: whisper.cpp conversion (https://huggingface.co/ggerganov/whisper.cpp)
+  - models/faster-whisper-small: CTranslate2 conversion by SYSTRAN, MIT
+    (https://huggingface.co/Systran/faster-whisper-small)
+
+whisper.cpp - MIT License, (c) The ggml authors. https://github.com/ggml-org/whisper.cpp
+  See licenses/whisper.cpp-LICENSE.txt
+
+WhisperX - BSD-2-Clause, (c) Max Bain. https://github.com/m-bain/whisperX
+  Voice activity model shipped inside the WhisperX package (pyannote segmentation, MIT).
+
+wav2vec 2.0 base, 960h LibriSpeech (models/align)
+  From the fairseq project (MIT) as packaged by torchaudio (BSD-2-Clause).
+  https://pytorch.org/audio/stable/generated/torchaudio.pipelines.WAV2VEC2_ASR_BASE_960H.html
+
+NLTK punkt_tab data (models/nltk_data) - Apache License 2.0. https://www.nltk.org/
+
+FFmpeg (bin/ffmpeg.exe) - LGPL v2.1 or later build by BtbN
+  https://github.com/BtbN/FFmpeg-Builds - corresponding source: https://ffmpeg.org/download.html
+  See licenses/ffmpeg-LICENSE.txt. FFmpeg is a trademark of Fabrice Bellard.
+
+Python 3.11 embeddable distribution - PSF License. See licenses/python-LICENSE.txt
+Python packages (PyTorch, faster-whisper, CTranslate2, pyannote.audio, transformers, ...)
+  See licenses/python-packages.txt and licenses/python-packages/<name>/.

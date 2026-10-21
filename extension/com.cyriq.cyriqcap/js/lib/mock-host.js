@@ -44,6 +44,16 @@
     createCaptions: function (p) { return { ok: true, created: p.captions.length, layers: [], warnings: [] }; }
   };
 
+  var installed = { small: true };
+  if (q.models) q.models.split(',').forEach(function (m) { installed[m] = true; });
+  var mockManifest = (function () {
+    var spec = [['ffmpeg', 1, 'ffmpeg/ffmpeg.exe'], ['whispercpp', 9, 'whisper.cpp/'], ['model-ggml-small', 1, 'models/ggml-small.bin'], ['python', 4120, 'python/Lib/site-packages/'],
+      ['whisperx', 2, 'whisperx/'], ['model-faster-whisper-small', 4, 'models/faster-whisper-small/'], ['model-align-en', 1, 'models/align/wav2vec2_fairseq_base_ls960_asr_ls960.pth'], ['data', 9, 'models/nltk_data/'], ['docs', 12, 'licenses/']];
+    var files = [];
+    spec.forEach(function (s) { for (var i = 0; i < s[1]; i++) files.push({ group: s[0], path: s[1] === 1 ? s[2] : s[2] + 'file' + i, size: 1 }); });
+    return { version: '1.0.0', files: files };
+  })();
+
   var SAMPLE = 'So today I want to show you how I edit my videos. First we pick the clip, then we cut the pauses, and finally we add the captions. It only takes a few minutes, and the result looks clean.';
 
   CQ.mockHost = {
@@ -51,18 +61,55 @@
       if (!H[fn]) return Promise.resolve({ ok: false, code: 'NO_FN', message: fn });
       return delay(60, H[fn](payload));
     },
-    verifyApi: function (dir) {
-      var groups = {};
-      ['ffmpeg', 'whispercpp', 'model-ggml-small', 'python', 'whisperx', 'model-faster-whisper-small', 'model-align-en', 'data'].forEach(function (g, i) { groups[g] = { ok: q.api !== 'bad' || i < 3, files: [1, 6, 1, 4120, 2, 4, 1, 9][i] }; });
-      var ok = q.api !== 'bad';
-      return delay(900, { ok: ok, dir: dir, version: '1.0.0', missing: ok ? [] : ['python/python.exe'], wrongSize: [], badHash: [], groups: groups, engines: { whispercpp: true, whisperx: ok, align: ok }, problems: ok ? [] : ['PARTIAL'] });
+    manifest: function () { return mockManifest; },
+    verifyApi: function (dir, o) {
+      o = o || {};
+      var files = mockManifest.files, bad = q.api === 'bad' ? { python: 1, whisperx: 1 } : {};
+      var res = { ok: true, dir: dir, version: '1.0.0', missing: [], wrongSize: [], badHash: [], groups: {}, engines: {}, problems: [] };
+      var i = 0;
+      return new Promise(function (resolve) {
+        function step() {
+          for (var k = 0; k < 40 && i < files.length; k++) {
+            var f = files[i++];
+            if (o.onFile) o.onFile(i, files.length, f.path, f.group);
+            var g = res.groups[f.group] = res.groups[f.group] || { ok: true, files: 0 };
+            g.files++;
+            if (bad[f.group] && i % 97 === 0) { g.ok = false; res.missing.push(f.path); if (o.onFail) o.onFail(f.path, f.group); }
+          }
+          if (i < files.length) return setTimeout(step, q.fast ? 0 : 16);
+          function ok(n) { return res.groups[n] && res.groups[n].ok; }
+          res.engines = { whispercpp: ok('ffmpeg') && ok('whispercpp') && ok('model-ggml-small'), whisperx: ok('python') && ok('whisperx') && ok('model-faster-whisper-small'), align: ok('model-align-en') };
+          res.ok = !res.missing.length;
+          if (!res.ok) res.problems.push('PARTIAL');
+          resolve(res);
+        }
+        step();
+      });
     },
+    modelStatus: function () {
+      return CQ.models.list.map(function (m) {
+        var on = !!installed[m.id];
+        return { id: m.id, name: m.name, tag: m.tag, ggml: on, ct2: on && !!m.ct2, installed: on, size: CQ.models.downloadSize(m) };
+      });
+    },
+    downloadModel: function (id, onProgress, sig) {
+      return new Promise(function (resolve, reject) {
+        var p = 0;
+        (function tick() {
+          if (sig.aborted) { var e = new Error('Cancelled'); e.code = 'CANCELLED'; return reject(e); }
+          p += 0.02; onProgress(Math.min(1, p));
+          if (p >= 1) { installed[id] = true; return resolve(); }
+          setTimeout(tick, q.fast ? 5 : 80);
+        })();
+      });
+    },
+    removeModel: function (id) { delete installed[id]; },
     transcriptionJob: function (o) {
       var cancelled = false;
       return {
         cancel: function () { cancelled = true; },
         start: function () {
-          var stages = [['extracting', 'Preparing audio', 8], ['loading', 'Loading model', 6], ['transcribing', 'Transcribing', 30], ['aligning', 'Aligning words', 10]];
+          var stages = [['extracting', 'Preparing audio', 8], ['loading', 'Loading model', 6], ['transcribing', 'Transcribing', 30], ['aligning', 'Timing words', 10]];
           var i = 0, k = 0;
           return new Promise(function (resolve, reject) {
             function tick() {
@@ -71,7 +118,7 @@
               if (!st) {
                 var t = 0.4, words = SAMPLE.split(' ').map(function (w) { var d = 0.18 + w.length * 0.035; var x = { text: w, start: t, end: t + d }; t += d + (/[.,]$/.test(w) ? 0.35 : 0.06); return x; });
                 o.onProgress({ state: 'done', pct: 1, label: 'Done' });
-                return resolve({ words: words, language: 'en', engine: o.engine, wordTiming: o.engine === 'whisperx' ? 'aligned' : 'whisper', seconds: 12.4 });
+                return resolve({ words: words, language: 'en', model: o.model, wordTiming: 'aligned', seconds: 12.4 });
               }
               o.onProgress({ state: st[0], pct: st[0] === 'loading' ? null : k / st[2], label: st[1] });
               k++;

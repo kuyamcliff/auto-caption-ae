@@ -61,7 +61,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--audio", required=True)
     ap.add_argument("--out", required=True)
-    ap.add_argument("--model", required=True, help="CTranslate2 faster-whisper model folder")
+    ap.add_argument("--model", default=None, help="CTranslate2 faster-whisper model folder")
+    ap.add_argument("--segments", default=None, help="JSON segments to align (skip transcription)")
     ap.add_argument("--language", default="auto")
     ap.add_argument("--threads", type=int, default=4)
     ap.add_argument("--batch", type=int, default=8)
@@ -80,8 +81,8 @@ def main():
         fail(out, "PYTHON_BROKEN", "loading", "The WhisperX runtime could not start: %s" % e,
              "Install the Microsoft Visual C++ Redistributable (x64) or use the Whisper.cpp engine.")
 
-    if not os.path.isdir(a.model) or not os.path.isfile(os.path.join(a.model, "model.bin")):
-        fail(out, "MODEL_MISSING", "loading", "The WhisperX model folder is missing.", "Re-check the API folder in Settings.")
+    if not a.segments and (not a.model or not os.path.isfile(os.path.join(a.model, "model.bin"))):
+        fail(out, "MODEL_MISSING", "loading", "The model folder is missing.", "Re-check the API folder in Settings.")
 
     try:
         audio = load_wav(a.audio)
@@ -89,6 +90,21 @@ def main():
         fail(out, "BAD_AUDIO", "loading", "The prepared audio could not be read: %s" % e, "Try again.")
 
     lang = None if a.language in ("", "auto") else a.language
+    if a.segments:
+        # alignment only: segments come from another transcriber (whisper.cpp)
+        with open(a.segments, encoding="utf-8") as f:
+            segments = [{"start": float(x["start"]), "end": float(x["end"]), "text": x["text"]} for x in json.load(f) if x.get("text")]
+        language = lang or "en"
+        aligned = False
+        if language in DEFAULT_ALIGN_MODELS_TORCH and segments:
+            emit("aligning", 0.0)
+            model_a, meta = whisperx.load_align_model(language_code=language, device="cpu", model_dir=os.path.join(API, "models", "align"))
+            res_a = whisperx.align(segments, model_a, meta, audio, "cpu", return_char_alignments=False)
+            segments = res_a.get("segments") or segments
+            aligned = True
+        emit("writing", 1.0)
+        write_out(out, {"language": language, "segments": clean_segments(segments), "aligned": aligned, "seconds": round(time.time() - t0, 2)})
+        return
     try:
         model = whisperx.load_model(a.model, "cpu", compute_type="int8", language=lang,
                                     threads=max(1, a.threads), local_files_only=True,
@@ -130,6 +146,11 @@ def main():
             emit("aligning", 1.0, warning="alignment unavailable: %s" % type(e).__name__)
 
     emit("writing", 1.0)
+    write_out(out, {"language": language, "segments": clean_segments(segments), "aligned": aligned,
+                    "seconds": round(time.time() - t0, 2)})
+
+
+def clean_segments(segments):
     clean = []
     for s in segments:
         words = []
@@ -143,8 +164,7 @@ def main():
             words.append(item)
         clean.append({"start": float(s.get("start", 0)), "end": float(s.get("end", 0)),
                       "text": s.get("text", ""), "words": words})
-    write_out(out, {"language": language, "segments": clean, "aligned": aligned,
-                    "seconds": round(time.time() - t0, 2)})
+    return clean
 
 
 if __name__ == "__main__":

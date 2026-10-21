@@ -157,10 +157,11 @@
         var groups = {};
         var totalBytes = files.reduce(function (a, f) { return a + (f.size || 0); }, 0), doneBytes = 0;
         var i = 0;
-        function mark(g, ok) { if (!groups[g]) groups[g] = { ok: true, files: 0 }; groups[g].files++; if (!ok) groups[g].ok = false; }
+        function mark(g, ok) { if (!groups[g]) groups[g] = { ok: true, files: 0 }; groups[g].files++; if (!ok) { groups[g].ok = false; if (o.onFail) o.onFail(files[i - 1].path, g); } }
         function nextFile() {
           if (i >= files.length) return finish();
           var f = files[i++];
+          if (o.onFile) o.onFile(i, files.length, f.path, f.group);
           var full = path.join(dir, f.path.split('/').join(path.sep));
           var st = stat(full);
           if (!st) { res.missing.push(f.path); mark(f.group, false); doneBytes += f.size || 0; return later(); }
@@ -172,7 +173,12 @@
           s.on('error', function () { res.badHash.push(f.path); mark(f.group, false); later(); });
           s.on('end', function () { var ok = h.digest('hex') === f.sha256; if (!ok) res.badHash.push(f.path); mark(f.group, ok); later(); });
         }
-        function later() { if (o.onProgress) o.onProgress(doneBytes / Math.max(1, totalBytes), null); setTimeout(nextFile, 0); }
+        var tick = 0;
+        function later() {
+          if (o.onProgress) o.onProgress(doneBytes / Math.max(1, totalBytes), null);
+          // yield to the UI every few files so the list stays live
+          if (++tick % 24 === 0) setTimeout(nextFile, 0); else nextFile();
+        }
         function finish() {
           res.groups = groups;
           function g(n) { return groups[n] ? groups[n].ok : false; }
@@ -263,47 +269,54 @@
   function threads() { var n = hasNode ? os.cpus().length : 4; return Math.max(1, Math.min(8, n - 1)); }
 
   var Engines = {
-    /** whisper.cpp: word-level segments via --max-len 1 + --split-on-word. */
+    /**
+     * whisper.cpp with full JSON output: sentence segments + per-token times.
+     * Tokens are merged into words (a token starting with a space starts a word).
+     */
     whispercpp: function (wav, P, opts) {
       var o = opts || {};
-      var base = wav.replace(/\.wav$/i, '');
-      var args = ['-m', P.ggmlSmall, '-f', wav, '-t', String(threads()), '-l', o.language || 'auto', '-oj', '-of', base, '-ml', '1', '-sow', '-pp', '-np'];
-      if (o.translate) args.push('-tr');
-      if (o.prompt) args.push('--prompt', String(o.prompt).slice(0, 200));
+      var base = wav.replace(/\.wav$/i, '') + '-wc';
+      var args = ['-m', o.ggml, '-f', wav, '-t', String(threads()), '-l', o.language || 'auto', '-ojf', '-of', base, '-pp', '-np'];
       if (o.onStage) o.onStage('loading', null);
-      var started = false;
       return run(P.whisperCli, args, {
-        step: 'transcribe', signal: o.signal, timeout: Math.max(600000, (o.duration || 60) * 12000), cwd: path.dirname(P.whisperCli),
+        step: 'transcribe', signal: o.signal, timeout: Math.max(600000, (o.duration || 60) * 15000), cwd: path.dirname(P.whisperCli),
         onStderr: function (s) {
           var m = /progress\s*=\s*(\d+)%/.exec(s);
-          if (m) { if (!started) { started = true; } if (o.onStage) o.onStage('transcribing', Number(m[1]) / 100); }
-          if (/failed to (load|read|open) model|invalid model/i.test(s)) Log.error(o.job, 'model load failure');
+          if (m && o.onStage) o.onStage('transcribing', Number(m[1]) / 100);
         }
       }).then(function () {
         var jf = base + '.json';
-        if (!exists(jf)) throw CQError('NO_RESULT', 'transcribe', 'The transcription engine returned no result.', 'Try again; if it repeats, re-check the API folder.');
+        if (!exists(jf)) throw CQError('NO_RESULT', 'transcribe');
         var raw;
-        try { raw = JSON.parse(fs.readFileSync(jf, 'utf8')); } catch (e) { throw CQError('BAD_RESULT', 'transcribe', 'The transcription result could not be read.', 'Try again.', e.message); }
-        var words = (raw.transcription || []).map(function (seg) {
-          var a = seg.offsets ? seg.offsets.from / 1000 : parseStamp(seg.timestamps && seg.timestamps.from);
-          var b = seg.offsets ? seg.offsets.to / 1000 : parseStamp(seg.timestamps && seg.timestamps.to);
-          return { word: String(seg.text || '').trim(), start: a, end: b };
-        }).filter(function (w) { return w.word && !/^\[.*\]$/.test(w.word); });
-        return { engine: 'whisper.cpp', language: raw.result ? raw.result.language : (o.language || 'auto'), segments: [{ start: words.length ? words[0].start : 0, end: words.length ? words[words.length - 1].end : 0, words: words }], wordTiming: 'whisper' };
+        try { raw = JSON.parse(fs.readFileSync(jf, 'utf8')); } catch (e) { throw CQError('BAD_RESULT', 'transcribe', '', '', e.message); }
+        var segments = (raw.transcription || []).map(function (seg) {
+          var words = [], cur = null;
+          (seg.tokens || []).forEach(function (tk) {
+            var tx = String(tk.text || '');
+            if (!tx || /^\[_/.test(tx) || /^\[.*\]$/.test(tx.trim())) return;
+            var a = tk.offsets ? tk.offsets.from / 1000 : parseStamp(tk.timestamps && tk.timestamps.from);
+            var b = tk.offsets ? tk.offsets.to / 1000 : parseStamp(tk.timestamps && tk.timestamps.to);
+            if (!cur || /^\s/.test(tx)) { cur = { word: tx.trim(), start: a, end: b }; words.push(cur); }
+            else { cur.word += tx; cur.end = b; }
+          });
+          words = words.filter(function (w) { return w.word; });
+          return { start: seg.offsets ? seg.offsets.from / 1000 : 0, end: seg.offsets ? seg.offsets.to / 1000 : 0, text: String(seg.text || '').trim(), words: words };
+        }).filter(function (s) { return s.text && !/^\[.*\]$/.test(s.text); });
+        return { language: raw.result ? raw.result.language : (o.language || 'en'), segments: segments, wordTiming: 'whisper' };
       }, function (e) {
         if (e.code === 'CANCELLED') throw e;
         var d = String(e.detail || '');
-        if (/failed to (load|read|open) model|invalid model|bad magic/i.test(d)) throw CQError('MODEL_CORRUPT', 'transcribe', 'The Whisper model could not be loaded.', 'The model file may be damaged. Run a full check in Settings and replace the API folder if needed.', d);
-        if (/not enough memory|bad_alloc|out of memory/i.test(d)) throw CQError('NO_MEMORY', 'transcribe', 'Not enough memory to run the model.', 'Close other applications and try again.', d);
-        if (/3221225781|0xC0000135|dll/i.test(e.code + ' ' + d)) throw CQError('DLL_MISSING', 'transcribe', 'A library needed by the engine is missing.', 'Install the Microsoft Visual C++ Redistributable (x64), then try again.', d);
+        if (/failed to (load|read|open) model|invalid model|bad magic/i.test(d)) throw CQError('MODEL_CORRUPT', 'transcribe', '', '', d);
+        if (/not enough memory|bad_alloc|out of memory/i.test(d)) throw CQError('NO_MEMORY', 'transcribe', '', '', d);
+        if (/3221225781|0xC0000135|dll/i.test(e.code + ' ' + d)) throw CQError('DLL_MISSING', 'transcribe', '', '', d);
         e.step = 'transcribe'; throw e;
       });
     },
 
-    /** WhisperX (faster-whisper + wav2vec2 alignment), offline, CPU. */
-    whisperx: function (wav, P, opts) {
+    /** Python runner: full transcription (+ alignment) or alignment only. */
+    python: function (wav, P, opts) {
       var o = opts || {};
-      var outJson = wav.replace(/\.wav$/i, '.wx.json');
+      var outJson = wav.replace(/\.wav$/i, o.segments ? '.align.json' : '.wx.json');
       var env = {};
       for (var k in process.env) env[k] = process.env[k];
       env.HF_HUB_OFFLINE = '1'; env.TRANSFORMERS_OFFLINE = '1'; env.HF_DATASETS_OFFLINE = '1';
@@ -311,11 +324,15 @@
       env.PYTHONIOENCODING = 'utf-8'; env.PYTHONUTF8 = '1'; env.PYTHONNOUSERSITE = '1';
       env.OMP_NUM_THREADS = String(threads());
       delete env.PYTHONPATH; delete env.PYTHONHOME;
-      var args = ['-I', P.wxScript, '--audio', wav, '--out', outJson, '--model', P.wxModel, '--threads', String(threads()), '--language', o.language || 'auto'];
-      if (o.align === false) args.push('--no-align');
+      var args = ['-I', P.wxScript, '--audio', wav, '--out', outJson, '--threads', String(threads()), '--language', o.language || 'auto'];
+      if (o.segments) {
+        var segFile = wav.replace(/\.wav$/i, '.segments.json');
+        fs.writeFileSync(segFile, JSON.stringify(o.segments));
+        args.push('--segments', segFile);
+      } else args.push('--model', o.ct2);
       var buf = '';
       return run(P.python, args, {
-        step: 'transcribe', signal: o.signal, env: env, cwd: path.dirname(P.wxScript), timeout: Math.max(900000, (o.duration || 60) * 20000),
+        step: o.segments ? 'align' : 'transcribe', signal: o.signal, env: env, cwd: path.dirname(P.wxScript), timeout: Math.max(900000, (o.duration || 60) * 25000),
         onStdout: function (s) {
           buf += s;
           var lines = buf.split(/\r?\n/); buf = lines.pop();
@@ -325,20 +342,102 @@
           });
         }
       }).then(function () {
-        if (!exists(outJson)) throw CQError('NO_RESULT', 'transcribe', 'WhisperX returned no result.', 'Try the Whisper.cpp engine.');
+        if (!exists(outJson)) throw CQError('NO_RESULT', 'python');
         var r = JSON.parse(fs.readFileSync(outJson, 'utf8'));
-        if (r.error) throw CQError(r.code || 'WHISPERX', r.step || 'transcribe', r.error, r.hint || 'Try the Whisper.cpp engine.');
-        return { engine: 'whisperx', language: r.language, segments: r.segments || [], wordTiming: r.aligned ? 'aligned' : 'estimated' };
+        if (r.error) throw CQError(r.code || 'PYTHON', r.step || 'python', '', '', r.error);
+        return { language: r.language, segments: r.segments || [], wordTiming: r.aligned ? 'aligned' : 'whisper' };
       }, function (e) {
         if (e.code === 'CANCELLED') throw e;
-        var d = String(e.detail || '');
-        try {
-          if (exists(outJson)) { var r = JSON.parse(fs.readFileSync(outJson, 'utf8')); if (r.error) throw CQError(r.code || 'WHISPERX', r.step || 'transcribe', r.error, r.hint || 'Try the Whisper.cpp engine.', d); }
-        } catch (x) { if (x.code) throw x; }
-        if (/MemoryError|out of memory|bad_alloc/i.test(d)) throw CQError('NO_MEMORY', 'transcribe', 'Not enough memory for WhisperX.', 'Close other applications or use Whisper.cpp.', d);
-        if (/ModuleNotFoundError|ImportError|DLL load failed/i.test(d)) throw CQError('PYTHON_BROKEN', 'transcribe', 'The bundled Python runtime is incomplete.', 'Install the Microsoft Visual C++ Redistributable (x64); otherwise replace the API folder.', d);
-        e.step = 'transcribe'; throw e;
+        try { if (exists(outJson)) { var r = JSON.parse(fs.readFileSync(outJson, 'utf8')); if (r.error) throw CQError(r.code || 'PYTHON', r.step || 'python', '', '', r.error); } } catch (x) { if (x.code) throw x; }
+        e.step = 'python'; throw e;
       });
+    }
+  };
+
+  /* ---------------------------------------------------------------- */
+  /* models (installed + downloads)                                    */
+  /* ---------------------------------------------------------------- */
+  var Models = {
+    ggmlPath: function (dir, id) { return path.join(dir, 'models', 'ggml-' + id + '.bin'); },
+    ct2Dir: function (dir, id) { return path.join(dir, 'models', 'faster-whisper-' + id); },
+    status: function (dir) {
+      return CQ.models.list.map(function (m) {
+        var g = stat(Models.ggmlPath(dir, m.id));
+        var c = Models.ct2Dir(dir, m.id);
+        var ctOk = exists(path.join(c, 'model.bin')) && exists(path.join(c, 'config.json')) && exists(path.join(c, 'tokenizer.json'));
+        var ggOk = !!(g && (!m.ggml.size || g.size === m.ggml.size));
+        return { id: m.id, name: m.name, tag: m.tag, ggml: ggOk, ct2: ctOk, installed: ggOk || ctOk, size: CQ.models.downloadSize(m) };
+      });
+    },
+    pythonOk: function (P) { return exists(P.python) && exists(P.wxScript); },
+    alignOk: function (P) { return exists(path.join(P.dir, 'models', 'align')) && fs.readdirSync(path.join(P.dir, 'models', 'align')).some(function (f) { return /\.pth$/.test(f); }); },
+
+    /** Download one file with resume, redirects, size + SHA-256 check. */
+    fetch: function (url, dest, expect, onBytes, signal) {
+      var https = req('https'), http = req('http'), URL = req('url');
+      var part = dest + '.part';
+      mkdirp(path.dirname(dest));
+      return new Promise(function (resolve, reject) {
+        var have = stat(part) ? stat(part).size : 0;
+        var aborted = false, reqObj = null;
+        if (signal) signal.on(function () { aborted = true; try { if (reqObj) reqObj.abort(); } catch (e) {} reject(CQError('CANCELLED', 'download')); });
+        function get(u, hops) {
+          if (hops > 8) return reject(CQError('DOWNLOAD', 'download', '', '', 'too many redirects'));
+          var opt = URL.parse(u);
+          opt.headers = { 'User-Agent': 'CyriqCap/1.0' };
+          if (have > 0) opt.headers.Range = 'bytes=' + have + '-';
+          var lib = opt.protocol === 'http:' ? http : https;
+          reqObj = lib.get(opt, function (res) {
+            if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) { res.resume(); return get(URL.resolve(u, res.headers.location), hops + 1); }
+            if (res.statusCode === 416) { res.resume(); return finish(); } // already complete
+            if (res.statusCode !== 200 && res.statusCode !== 206) { res.resume(); return reject(CQError('DOWNLOAD', 'download', '', '', 'HTTP ' + res.statusCode)); }
+            if (res.statusCode === 200) have = 0; // server ignored the range: start over
+            var out = fs.createWriteStream(part, { flags: have > 0 ? 'a' : 'w' });
+            res.on('data', function (b) { if (onBytes) onBytes(b.length); });
+            res.pipe(out);
+            out.on('finish', function () { if (!aborted) finish(); });
+            out.on('error', function (e) { reject(CQError(/ENOSPC/.test(e.code) ? 'DISK_FULL' : 'DOWNLOAD', 'download', '', '', e.message)); });
+            res.on('error', function (e) { reject(CQError('DOWNLOAD', 'download', '', '', e.message)); });
+          });
+          reqObj.on('error', function (e) { if (!aborted) reject(CQError('OFFLINE', 'download', '', '', e.message)); });
+          reqObj.setTimeout(60000, function () { reqObj.abort(); });
+        }
+        function finish() {
+          var st = stat(part);
+          if (expect.size && (!st || st.size !== expect.size)) { try { fs.unlinkSync(part); } catch (e) {} return reject(CQError('DOWNLOAD_BAD', 'download', '', '', 'size')); }
+          if (!expect.sha256) { fs.renameSync(part, dest); return resolve(dest); }
+          var h = crypto.createHash('sha256');
+          fs.createReadStream(part).on('data', function (b) { h.update(b); }).on('end', function () {
+            if (h.digest('hex') !== expect.sha256) { try { fs.unlinkSync(part); } catch (e) {} return reject(CQError('DOWNLOAD_BAD', 'download', '', '', 'sha256')); }
+            try { if (exists(dest)) fs.unlinkSync(dest); fs.renameSync(part, dest); } catch (e) { return reject(CQError('DOWNLOAD', 'download', '', '', e.message)); }
+            resolve(dest);
+          }).on('error', function (e) { reject(CQError('DOWNLOAD', 'download', '', '', e.message)); });
+        }
+        get(url, 0);
+      });
+    },
+
+    /** Download every missing file of a model into the API folder. */
+    download: function (dir, id, onProgress, signal) {
+      var m = CQ.models.byId(id);
+      if (!m) return Promise.reject(CQError('UNKNOWN_MODEL', 'download'));
+      var jobs = [];
+      if (m.ggml && !exists(Models.ggmlPath(dir, id))) jobs.push({ url: m.ggml.url, dest: Models.ggmlPath(dir, id), size: m.ggml.size, sha256: m.ggml.sha256 });
+      (m.ct2 || []).forEach(function (f) { var d = path.join(Models.ct2Dir(dir, id), f.name); if (!exists(d)) jobs.push({ url: f.url, dest: d, size: f.size, sha256: f.sha256 }); });
+      var total = jobs.reduce(function (a, j) { return a + (j.size || 3000); }, 0), done = 0;
+      Log.info(null, 'download model ' + id + ' files=' + jobs.length + ' bytes=' + total);
+      return jobs.reduce(function (pr, j) {
+        return pr.then(function () {
+          return Models.fetch(j.url, j.dest, j, function (n) { done += n; if (onProgress) onProgress(Math.min(1, done / total), done, total); }, signal);
+        });
+      }, Promise.resolve()).then(function () { Log.info(null, 'download model ' + id + ' ok'); return true; }, function (e) { Log.error(null, 'download ' + id + ' ' + e.code + ' ' + (e.detail || '')); throw e; });
+    },
+
+    remove: function (dir, id) {
+      var m = CQ.models.byId(id);
+      if (!m || m.bundled) return false;
+      try { if (exists(Models.ggmlPath(dir, id))) fs.unlinkSync(Models.ggmlPath(dir, id)); rmrf(Models.ct2Dir(dir, id)); } catch (e) { return false; }
+      return true;
     }
   };
 
@@ -376,54 +475,112 @@
   };
 
   /* ---------------------------------------------------------------- */
-  /* transcription job (state machine)                                 */
+  /* transcription job: one pipeline, no engine choice                */
   /* ---------------------------------------------------------------- */
+  /*
+   * 1. Prepare audio (ffmpeg).
+   * 2. If the model is available in CTranslate2 form and the Python runtime
+   *    works: transcribe + align words in one pass.
+   * 3. Otherwise transcribe with whisper.cpp, then refine the word timing
+   *    with the alignment model (if available).
+   * Each step falls back to the next one instead of failing.
+   */
   function TranscriptionJob(opts) {
     this.id = uid();
     this.opts = opts;
     this.signal = new Signal();
     this.state = 'idle';
     this.tmp = null;
+    this.notes = [];
   }
   TranscriptionJob.prototype.cancel = function () { if (this.state !== 'done' && this.state !== 'error') { this.signal.abort(); this.state = 'cancelling'; } };
   TranscriptionJob.prototype.start = function () {
     var self = this, o = this.opts, P = Api.paths(o.apiDir);
-    var set = function (state, pct, label) { self.state = state; if (o.onProgress) o.onProgress({ state: state, pct: pct, label: label }); };
-    Log.info(self.id, 'start engine=' + o.engine + ' lang=' + (o.language || 'auto') + ' pieces=' + o.plan.pieces.length + ' range=' + (o.plan.range.end - o.plan.range.start).toFixed(2) + 's');
+    var LABEL = { extracting: 'Preparing audio', loading: 'Loading model', vad: 'Loading model', transcribing: 'Transcribing', aligning: 'Timing words', writing: 'Finishing', done: 'Done' };
+    var set = function (state, pct) { self.state = state; if (o.onProgress) o.onProgress({ state: state === 'vad' ? 'loading' : state === 'writing' ? 'aligning' : state, pct: pct, label: LABEL[state] || 'Working' }); };
+    var modelId = o.model || CQ.models.DEFAULT;
+    var ggml = Models.ggmlPath(o.apiDir, modelId), ct2 = Models.ct2Dir(o.apiDir, modelId);
+    var haveGgml = exists(ggml), haveCt2 = exists(path.join(ct2, 'model.bin'));
+    var py = Models.pythonOk(P), align = py && Models.alignOk(P);
+    if (!haveGgml && !haveCt2) return Promise.reject(CQError('MODEL_MISSING', 'prepare'));
+    Log.info(self.id, 'start model=' + modelId + ' ggml=' + haveGgml + ' ct2=' + haveCt2 + ' py=' + py + ' align=' + align + ' lang=' + (o.language || 'auto') + ' pieces=' + o.plan.pieces.length + ' len=' + (o.plan.range.end - o.plan.range.start).toFixed(2) + 's');
     var t0 = Date.now();
-    try { self.tmp = Temp.job(self.id); } catch (e) { return Promise.reject(CQError('TEMP', 'prepare', 'Could not create a temporary folder.', 'Check free disk space.', e.message)); }
-    var wav = path.join(self.tmp, 'audio.wav');
-    set('extracting', 0, 'Preparing audio');
-    return extractAudio(o.plan, wav, P.ffmpeg, { signal: self.signal, onProgress: function (p) { set('extracting', p, 'Preparing audio'); } })
+    try { self.tmp = Temp.job(self.id); } catch (e) { return Promise.reject(CQError('TEMP', 'prepare', '', '', e.message)); }
+    var wav = path.join(self.tmp, 'audio.wav'), duration = 0;
+    var stage = function (st, pct) { set(st, pct); };
+    set('extracting', 0);
+
+    function viaWhisperCpp() {
+      if (!haveGgml) throw CQError('MODEL_MISSING', 'transcribe');
+      return Engines.whispercpp(wav, P, { ggml: ggml, language: o.language, duration: duration, signal: self.signal, onStage: stage }).then(function (r) {
+        if (!align || !r.segments.length) return r;
+        set('aligning', null);
+        return Engines.python(wav, P, { segments: r.segments.map(function (s) { return { start: s.start, end: s.end, text: s.text }; }), language: r.language, duration: duration, signal: self.signal, onStage: function (st, pct) { set('aligning', st === 'aligning' ? pct : null); } })
+          .then(function (a) { return a.wordTiming === 'aligned' && a.segments.length ? { language: r.language, segments: a.segments, wordTiming: 'aligned' } : r; },
+            function (e) { if (e.code === 'CANCELLED') throw e; Log.warn(self.id, 'alignment skipped: ' + e.code + ' ' + String(e.detail || '').slice(-300)); return r; });
+      });
+    }
+
+    return extractAudio(o.plan, wav, P.ffmpeg, { signal: self.signal, onProgress: function (p) { set('extracting', p); } })
       .then(function (a) {
-        Log.info(self.id, 'audio ok ' + a.duration.toFixed(2) + 's in ' + (Date.now() - t0) + 'ms');
-        set('loading', null, 'Loading model');
-        var eng = Engines[o.engine];
-        if (!eng) throw CQError('ENGINE', 'transcribe', 'Unknown engine.', '');
-        return eng(wav, P, {
-          language: o.language, duration: a.duration, signal: self.signal, job: self.id, align: o.align,
-          onStage: function (st, pct) {
-            var labels = { loading: 'Loading model', vad: 'Detecting speech', transcribing: 'Transcribing', aligning: 'Aligning words', writing: 'Finishing' };
-            set(st === 'loading' || st === 'vad' ? 'loading' : st, pct, labels[st] || 'Working');
-          }
-        });
+        duration = a.duration;
+        Log.info(self.id, 'audio ' + a.duration.toFixed(2) + 's in ' + (Date.now() - t0) + 'ms');
+        set('loading', null);
+        if (haveCt2 && py) {
+          return Engines.python(wav, P, { ct2: ct2, language: o.language, duration: duration, signal: self.signal, onStage: stage })
+            .catch(function (e) {
+              if (e.code === 'CANCELLED' || self.signal.aborted) throw e;
+              Log.warn(self.id, 'python pipeline failed (' + e.code + '): ' + String(e.detail || '').slice(-400) + ' -> whisper.cpp');
+              if (!haveGgml) throw e;
+              set('loading', null);
+              align = false; // the runtime that failed is also the aligner
+              return viaWhisperCpp();
+            });
+        }
+        return viaWhisperCpp();
       })
       .then(function (r) {
         var words = CQ.captions.normalize(r.segments);
-        if (!words.length) throw CQError('EMPTY', 'transcribe', 'No speech was detected.', 'Check the audio level and the language setting.');
-        Log.info(self.id, 'done words=' + words.length + ' engine=' + r.engine + ' timing=' + r.wordTiming + ' in ' + ((Date.now() - t0) / 1000).toFixed(1) + 's');
-        set('done', 1, 'Done');
-        return { words: words, language: r.language, engine: r.engine, wordTiming: r.wordTiming, seconds: (Date.now() - t0) / 1000 };
+        if (!words.length) throw CQError('EMPTY', 'transcribe');
+        Log.info(self.id, 'done words=' + words.length + ' timing=' + r.wordTiming + ' in ' + ((Date.now() - t0) / 1000).toFixed(1) + 's');
+        set('done', 1);
+        return { words: words, language: r.language, wordTiming: r.wordTiming, seconds: (Date.now() - t0) / 1000, model: modelId };
       })
       .then(function (r) { Temp.clean(self.tmp); return r; }, function (e) {
         Temp.clean(self.tmp);
-        if (e.code === 'CANCELLED' || self.signal.aborted) { Log.info(self.id, 'cancelled'); set('cancelled', null, 'Cancelled'); throw CQError('CANCELLED', e.step || 'transcribe', 'Cancelled'); }
-        Log.error(self.id, (e.code || 'ERR') + ' step=' + (e.step || '?') + ' ' + e.message + (e.detail ? ' :: ' + String(e.detail).slice(-400) : ''));
-        set('error', null, e.message);
+        if (e.code === 'CANCELLED' || self.signal.aborted) { Log.info(self.id, 'cancelled'); set('cancelled', null); throw CQError('CANCELLED', e.step || 'transcribe'); }
+        Log.error(self.id, (e.code || 'ERR') + ' step=' + (e.step || '?') + (e.detail ? ' :: ' + String(e.detail).slice(-500) : ''));
+        set('error', null);
         throw e;
       });
   };
 
-  CQ.services = { hasNode: hasNode, isWin: isWin, Log: Log, Api: Api, Temp: Temp, Fonts: Fonts, Engines: Engines, TranscriptionJob: TranscriptionJob, extractAudio: extractAudio, run: run, Signal: Signal, CQError: CQError, appDataDir: appDataDir, exists: exists, mkdirp: mkdirp };
+  /*
+   * Friendly text for every error code. Raw details only go to the log.
+   */
+  var MESSAGES = {
+    MODEL_MISSING: ['Model not installed', 'Download the selected model, or pick another one.'],
+    NO_AUDIO: ['No sound found', 'The selected layer has no audio track, or its audio is switched off.'],
+    UNSUPPORTED_CODEC: ['Media format not supported', 'Convert the file to MP4, MOV, WAV or MP3 and try again.'],
+    FILE_MISSING: ['Media file missing', 'Relink the footage in After Effects, then try again.'],
+    DISK_FULL: ['Not enough disk space', 'Free some space on your system drive and try again.'],
+    NO_MEMORY: ['Not enough memory', 'Close other applications or choose a smaller model.'],
+    MODEL_CORRUPT: ['Model file damaged', 'Open Settings and run a full check, or download the model again.'],
+    DLL_MISSING: ['Windows component missing', 'Install the Microsoft Visual C++ Redistributable (x64), then try again.'],
+    EMPTY: ['No speech detected', 'Check the audio level and the language.'],
+    TIMEOUT: ['This took too long', 'Try a shorter clip or a smaller model.'],
+    TEMP: ['Could not prepare temporary files', 'Check free disk space and try again.'],
+    OFFLINE: ['No internet connection', 'Connect to the internet to download models.'],
+    DOWNLOAD: ['Download interrupted', 'Click Download again to resume.'],
+    DOWNLOAD_BAD: ['Download was damaged', 'Click Download again. The damaged file was removed.'],
+    BIN_MISSING: ['CyriqCap API folder incomplete', 'Open Settings to see which files are missing.'],
+    SPAWN_FAILED: ['Could not start transcription', 'Your antivirus may be blocking the API folder. Allow it and try again.']
+  };
+  function friendly(e) {
+    var m = MESSAGES[e && e.code] || ['Something went wrong', 'Try again. If it keeps happening, open Settings › Logs.'];
+    return { title: m[0], text: m[1] };
+  }
+
+  CQ.services = { hasNode: hasNode, isWin: isWin, Log: Log, Api: Api, Temp: Temp, Fonts: Fonts, Engines: Engines, Models: Models, friendly: friendly, TranscriptionJob: TranscriptionJob, extractAudio: extractAudio, run: run, Signal: Signal, CQError: CQError, appDataDir: appDataDir, exists: exists, mkdirp: mkdirp };
   if (typeof module !== 'undefined' && module.exports) module.exports = CQ.services;
 })(typeof window !== 'undefined' ? window : global);

@@ -1,134 +1,108 @@
-/* Auto Caption tab. */
+/* Captions tab. */
 (function (root) {
   'use strict';
   var CQ = root.CQ;
   var U = CQ.ui, el = U.el, C = CQ.captions;
 
   var DEFAULT_STYLE = {
-    font: 'Montserrat-Bold', size: 80, fill: '#ffffff', strokeOn: true, stroke: '#000000', strokeWidth: 6, tracking: 0,
-    caps: false, pos: 'bc', offX: 0, offY: 0, maxChars: 32, boxOn: false, box: '#000000', boxOpacity: 65, boxPadX: 26, boxPadY: 14, boxRound: 12,
-    shadowOn: true, hlOn: false, hl: '#ffd400', hlMode: 'current', anim: 'none', speed: 1
+    font: 'Montserrat-Bold', size: 72, fill: '#ffffff', strokeOn: true, stroke: '#000000', strokeWidth: 5, tracking: 0,
+    caps: false, place: 'bottom', margin: 110, justify: 'center', maxChars: 32,
+    boxOn: false, box: '#000000', boxOpacity: 65, hlOn: false, hl: '#ffd400', shadowOn: true, anim: 'none', speed: 1
   };
-
   var S = {
-    plan: null, job: null, running: false, words: null, captions: [], dirty: false, wordTiming: null, language: null,
+    plan: null, job: null, running: false, words: null, captions: [], dirty: false, wordTiming: null,
     grouping: U.store.get('grouping', 'auto'), custom: U.store.get('customWords', 3),
-    engine: U.store.get('engine', 'whisperx'), lang: U.store.get('lang', 'auto'),
-    style: (function () { var s = U.store.get('style', {}), o = {}, k; for (k in DEFAULT_STYLE) o[k] = s[k] != null ? s[k] : DEFAULT_STYLE[k]; return o; })()
+    model: U.store.get('model', CQ.models.DEFAULT), lang: U.store.get('lang', 'auto'),
+    style: (function () { var s = U.store.get('style2', {}), o = {}, k; for (k in DEFAULT_STYLE) o[k] = s[k] != null ? s[k] : DEFAULT_STYLE[k]; return o; })()
   };
+  var V = {}, player = null;
 
-  var V = {};       // element refs
-  var player = null;
+  function saveStyle() { U.store.set('style2', S.style); refreshPreview(); }
 
-  function saveStyle() { U.store.set('style', S.style); refreshPreview(); }
-
-  /* ---------------------------------------------------------- source card */
-  function kindLabel(k) { return { 'video-audio': 'Video + audio', audio: 'Audio', precomp: 'Precomp', video: 'Video (no audio)', text: 'Text', shape: 'Shape', solid: 'Solid' }[k] || k; }
-
+  /* ---------------------------------------------------------- source */
+  var KIND = { 'video-audio': 'Video', audio: 'Audio', precomp: 'Precomp', video: 'Video', text: 'Text', shape: 'Shape', solid: 'Solid' };
   function renderSource(sel) {
-    var card = V.source;
-    card.innerHTML = '';
     var layers = (sel && sel.layers) || [];
     var usable = layers.filter(function (l) { return l.kind === 'audio' || l.kind === 'video-audio' || l.kind === 'precomp'; });
-    var cls = 'card source', ico = 'film', t, s;
-    if (!sel || !sel.comp) { cls += ' empty'; ico = 'alert'; t = 'No composition open'; s = 'Open a composition'; }
-    else if (!layers.length) { cls += ' empty'; ico = 'layers'; t = 'Select a layer in the timeline'; s = 'Audio · Video · Precomp'; }
-    else if (!usable.length) { cls += ' bad'; ico = 'alert'; t = layers[0].name; s = kindLabel(layers[0].kind) + ' · no audio'; }
-    else if (usable.length > 1) { cls += ' bad'; ico = 'alert'; t = usable.length + ' sources selected'; s = 'Select one source layer'; }
+    var cls = 'source', ico = 'layers', t, s;
+    if (!sel || !sel.comp) { cls += ' warn'; ico = 'warn'; t = 'No composition open'; s = 'Open a composition in After Effects'; }
+    else if (!layers.length) { ico = 'layers'; t = 'Select a layer in the timeline'; s = 'Audio, video or precomp'; }
+    else if (!usable.length) { cls += ' bad'; ico = 'alert'; t = layers[0].name; s = 'This layer has no audio'; }
+    else if (usable.length > 1) { cls += ' warn'; ico = 'warn'; t = usable.length + ' layers selected'; s = 'Select one layer'; }
     else {
       var l = usable[0];
       ico = l.kind === 'audio' ? 'wave' : l.kind === 'precomp' ? 'layers' : 'film';
-      t = l.name; s = C.fmtTime(l.inPoint) + ' – ' + C.fmtTime(l.outPoint) + ' · ' + sel.comp.name;
-      if (l.fileExists === false) { cls += ' bad'; s = 'Media file missing'; }
+      t = l.name; s = KIND[l.kind] + ' · ' + C.fmtTime(l.inPoint) + ' – ' + C.fmtTime(l.outPoint);
+      if (l.fileExists === false) { cls += ' bad'; ico = 'alert'; s = 'Media file is missing'; }
     }
-    card.className = cls;
-    card.appendChild(el('div', { class: 'ico', html: CQ.icons[ico] }));
-    var meta = el('div', { class: 'meta' }, [el('div', { class: 't' }, [t, usable.length === 1 ? el('span', { class: 'kind', text: kindLabel(usable[0].kind) }) : null]), el('div', { class: 's', text: s })]);
-    card.appendChild(meta);
+    V.source.className = cls;
+    V.source.innerHTML = '';
+    V.source.appendChild(U.svg(ico));
+    V.source.appendChild(el('div', { class: 'grow' }, [el('div', { class: 't', text: t }), el('div', { class: 's', text: s })]));
     V.gen.disabled = S.running || !(usable.length === 1 && usable[0].fileExists !== false);
   }
 
-  /* ---------------------------------------------------------- progress */
-  var STEPS = [['extracting', 'Audio'], ['loading', 'Model'], ['transcribing', 'Transcribe'], ['aligning', 'Align'], ['done', 'Done']];
+  /* ---------------------------------------------------------- models */
+  function renderModels() {
+    var st = CQ.app.modelStatus || [];
+    var opts = st.filter(function (m) { return m.installed; }).map(function (m) { return { value: m.id, label: m.name }; });
+    if (!opts.length) opts = [{ value: '', label: 'No model installed', disabled: true }];
+    if (!st.some(function (m) { return m.id === S.model && m.installed; })) { var f = st.filter(function (m) { return m.installed; })[0]; S.model = f ? f.id : ''; }
+    var sel = U.select(opts, S.model, function (v) { S.model = v; U.store.set('model', v); });
+    if (V.modelSel && V.modelSel.parentNode) V.modelSel.parentNode.replaceChild(sel, V.modelSel);
+    V.modelSel = sel;
+  }
+
+  /* ---------------------------------------------------------- generate */
+  var HOST = {
+    NO_COMP: ['No composition open', 'Open a composition and select a layer.'],
+    NO_SELECTION: ['Nothing selected', 'Select an audio, video or precomp layer in the timeline.'],
+    UNSUPPORTED_LAYER: ['This layer has no audio', 'Select a layer with sound, or a precomp that contains audio.'],
+    MULTIPLE_SOURCES: ['Select one layer', 'Several layers with audio are selected. Select only the one to caption.'],
+    NO_AUDIO: ['No audio inside', 'The precomp has no audible layers.'],
+    FILE_MISSING: ['Media file missing', 'Relink the footage in After Effects, then try again.'],
+    NO_FILE: ['No media file', 'This layer does not come from a media file.']
+  };
+  function hostError(r) { var m = HOST[r.code] || ['Could not read the selection', 'Try selecting the layer again.']; U.dialog({ kind: 'warn', title: m[0], text: m[1] }); }
+
+  function generate() {
+    if (S.running) return;
+    if (!CQ.app.apiReady()) return;
+    if (!S.model) { CQ.modelsUI.open(); return; }
+    var go = function () {
+      CQ.host.call('getAudioPlan', {}).then(function (r) { if (!r.ok) return hostError(r); startJob(r); },
+        function () { U.dialog({ kind: 'err', title: 'After Effects is not responding', text: 'Wait a moment and try again.' }); });
+    };
+    if (S.dirty && S.captions.length) U.dialog({ kind: 'warn', title: 'Replace your edits?', text: 'Generating again replaces the edited transcript.', actions: [{ label: 'Cancel' }, { label: 'Replace', primary: true, onClick: go }] });
+    else go();
+  }
+
   function showProgress(p) {
     V.prog.classList.remove('hidden');
-    V.progStage.textContent = p.label || '';
+    V.progLabel.textContent = p.label || 'Working';
     var indet = p.pct == null;
     V.bar.classList.toggle('indet', indet);
     V.barFill.style.width = indet ? '' : Math.round((p.pct || 0) * 100) + '%';
     V.pct.textContent = indet ? '' : Math.round((p.pct || 0) * 100) + '%';
-    var idx = STEPS.map(function (x) { return x[0]; }).indexOf(p.state);
-    if (p.state === 'writing') idx = 3;
-    U.$$('span', V.steps).forEach(function (sp, i) {
-      sp.className = i < idx ? 'done' : i === idx ? 'on' : '';
-      if (S.engine === 'whispercpp' && i === 3) sp.style.display = 'none'; else sp.style.display = '';
-    });
-  }
-
-  /* ---------------------------------------------------------- generate */
-  function apiReady() {
-    var a = CQ.app.api;
-    if (!a || !(a.engines.whispercpp || a.engines.whisperx)) {
-      U.modal({ kind: 'warn', title: 'API folder needed', text: 'Choose your CyriqCap API folder to transcribe.', actions: [{ label: 'Close' }, { label: 'Open Settings', primary: true, onClick: function () { CQ.app.go('settings'); } }] });
-      return false;
-    }
-    if (!a.engines[S.engine]) {
-      var other = S.engine === 'whisperx' ? 'whispercpp' : 'whisperx';
-      if (a.engines[other]) { S.engine = other; V.engine.value = other; U.toast('warn', 'Engine switched', (other === 'whisperx' ? 'WhisperX' : 'Whisper.cpp') + ' is used because the other engine is incomplete in the API folder.'); }
-    }
-    return true;
-  }
-
-  var HOST_ERRORS = {
-    NO_COMP: ['No composition', 'Open a composition and select a layer.'],
-    NO_SELECTION: ['Nothing selected', 'Select an audio, video or precomp layer in the timeline.'],
-    UNSUPPORTED_LAYER: ['Layer has no audio', 'Select an audio layer, a video with sound, or a precomp that contains audio.'],
-    MULTIPLE_SOURCES: ['Several sources selected', 'Select exactly one source layer so audio is never mixed by accident.'],
-    NO_AUDIO: ['No audio found', 'The precomp has no audible layers. Check that audio is switched on.'],
-    FILE_MISSING: ['Media file missing', 'Relink the footage in After Effects, then try again.'],
-    NO_FILE: ['No media file', 'This layer does not come from a file.']
-  };
-
-  function generate() {
-    if (S.running) return;
-    if (!apiReady()) return;
-    var go = function () {
-      CQ.host.call('getAudioPlan', {}).then(function (r) {
-        if (!r.ok) {
-          var m = HOST_ERRORS[r.code] || ['Cannot read the selection', r.message];
-          U.modal({ kind: 'warn', title: m[0], text: m[1] });
-          return;
-        }
-        if (r.warnings && r.warnings.length) U.toast('warn', 'Note', r.warnings[0]);
-        startJob(r);
-      }, function (e) { U.modal({ kind: 'err', title: 'After Effects did not respond', text: e.message }); });
-    };
-    if (S.dirty && S.captions.length) {
-      U.modal({ kind: 'warn', title: 'Replace edited transcript?', text: 'Your edits will be lost.', actions: [{ label: 'Keep edits' }, { label: 'Replace', primary: true, onClick: go }] });
-    } else go();
   }
 
   function startJob(plan) {
-    S.plan = plan;
-    S.running = true;
+    S.plan = plan; S.running = true;
     V.gen.classList.add('hidden');
-    V.cancel.disabled = false;
-    showProgress({ state: 'extracting', pct: 0, label: 'Preparing audio' });
+    showProgress({ pct: 0, label: 'Preparing audio' });
     CQ.app.busy(true);
-    var job;
-    if (CQ.services.hasNode && CQ.host.inAE || (CQ.services.hasNode && !root.CQ.mockHost)) {
-      job = new CQ.services.TranscriptionJob({ apiDir: CQ.app.apiDir, engine: S.engine, language: S.lang, plan: plan, onProgress: showProgress });
-    } else {
-      job = CQ.mockHost.transcriptionJob({ engine: S.engine, language: S.lang, plan: plan, onProgress: showProgress });
-    }
+    var job = CQ.services.hasNode
+      ? new CQ.services.TranscriptionJob({ apiDir: CQ.app.apiDir, model: S.model, language: S.lang, plan: plan, onProgress: showProgress })
+      : CQ.mockHost.transcriptionJob({ model: S.model, language: S.lang, plan: plan, onProgress: showProgress });
     S.job = job;
     job.start().then(function (r) {
-      S.words = r.words; S.language = r.language; S.wordTiming = r.wordTiming; S.dirty = false;
+      S.words = r.words; S.wordTiming = r.wordTiming; S.dirty = false;
       regroup();
-      U.toast('ok', 'Transcript ready', r.words.length + ' words · ' + r.seconds.toFixed(1) + ' s');
+      U.toast('ok', 'Transcript ready', r.words.length + ' words');
     }, function (e) {
-      if (e.code === 'CANCELLED') { U.toast('info', 'Cancelled', 'No changes were made.'); return; }
-      U.modal({ kind: 'err', title: 'Transcription failed', text: (e.step ? 'Step: ' + stepName(e.step) + '. ' : '') + e.message, list: e.hint ? [e.hint] : null, detail: e.detail ? String(e.detail).slice(-600) : null });
+      if (e.code === 'CANCELLED') return;
+      var f = CQ.services.friendly(e);
+      U.dialog({ kind: 'err', title: f.title, text: f.text, actions: e.code === 'MODEL_MISSING' ? [{ label: 'Close' }, { label: 'Models', primary: true, onClick: CQ.modelsUI.open }] : null });
     }).then(function () {
       S.running = false; S.job = null;
       V.prog.classList.add('hidden'); V.gen.classList.remove('hidden');
@@ -136,261 +110,210 @@
       renderSource(CQ.app.selection);
     });
   }
-  function stepName(s) { return { extract: 'Preparing audio', transcribe: 'Transcription', loading: 'Loading model', prepare: 'Preparation', transcribing: 'Transcription' }[s] || s; }
-
-  function cancel() { if (S.job) { V.cancel.disabled = true; V.progStage.textContent = 'Cancelling'; S.job.cancel(); } }
 
   /* ---------------------------------------------------------- transcript */
-  function groupingValue() { return S.grouping === 'custom' ? 'custom' : S.grouping; }
-
   function regroup() {
     if (!S.words) return;
     var groups;
-    try { groups = C.groupWords(S.words, groupingValue(), { custom: S.custom, maxChars: S.style.maxChars }); }
-    catch (e) { U.toast('warn', 'Grouping', e.message); return; }
+    try { groups = C.groupWords(S.words, S.grouping, { custom: S.custom, maxChars: S.style.maxChars }); }
+    catch (e) { U.toast('warn', 'Words per caption', '1 to ' + C.CUSTOM_MAX); return; }
     var r = S.plan.range;
     S.captions = C.fitTiming(groups, { offset: r.start, compStart: r.start, compEnd: r.end, fps: S.plan.comp.frameRate });
     S.dirty = false;
-    renderTranscript();
-    refreshPreview();
-  }
-
-  function timingBadge() {
-    if (S.wordTiming === 'aligned') return el('span', { class: 'badge ok', text: 'Aligned' });
-    if (S.wordTiming === 'whisper') return el('span', { class: 'badge info', text: 'Whisper timing' });
-    return el('span', { class: 'badge warn', text: 'Estimated' });
+    renderTranscript(); refreshPreview();
   }
 
   function renderTranscript() {
-    var card = V.trCard;
-    card.classList.toggle('hidden', !S.words);
+    V.tr.classList.toggle('hidden', !S.words);
     if (!S.words) return;
-    V.trCount.textContent = S.captions.length + ' captions';
-    V.trBadge.innerHTML = ''; V.trBadge.appendChild(timingBadge());
-    U.$$('.chip', V.groupChips).forEach(function (c) { c.classList.toggle('active', String(c.dataset.g) === String(S.grouping)); });
-    var list = V.trList;
-    list.innerHTML = '';
+    V.trInfo.textContent = S.captions.length + ' captions';
+    var list = V.list; list.innerHTML = '';
     var fps = S.plan.comp.frameRate;
     S.captions.forEach(function (c, i) {
-      var tIn = el('input', { class: 'input', value: C.fmtTime(c.start, fps), title: 'In' });
-      var tOut = el('input', { class: 'input', value: C.fmtTime(c.end, fps), title: 'Out' });
+      var a = el('input', { class: 'input', value: C.fmtTime(c.start, fps), title: 'Start' });
+      var b = el('input', { class: 'input', value: C.fmtTime(c.end, fps), title: 'End' });
       var ta = el('textarea', { class: 'input', rows: 1 });
       ta.value = c.text;
-      var words = el('div', { class: 'words' });
-      function paintWords() { words.textContent = c.words.map(function (w) { return w.text; }).length + ' words' + (c.est ? ' · estimated timing' : ''); }
-      paintWords();
-      function fit() { ta.style.height = 'auto'; ta.style.height = Math.max(32, ta.scrollHeight + 2) + 'px'; }
-      ta.addEventListener('input', function () { c.text = ta.value; c.words = C.retime(c); S.dirty = true; paintWords(); fit(); if (i === 0) refreshPreview(); });
-      ta.addEventListener('focus', function () { row.classList.add('focus'); });
-      ta.addEventListener('blur', function () { row.classList.remove('focus'); });
+      function fit() { ta.style.height = 'auto'; ta.style.height = Math.max(24, ta.scrollHeight + 2) + 'px'; }
+      ta.addEventListener('input', function () { c.text = ta.value; c.words = C.retime(c); S.dirty = true; fit(); if (i === 0) refreshPreview(); });
       function onTime(inp, key) {
         inp.addEventListener('change', function () {
           var v = C.parseTime(inp.value, fps);
           var ok = isFinite(v) && v >= S.plan.range.start - 1e-6 && v <= S.plan.range.end + 1e-6;
-          if (ok) { c[key] = v; ok = c.end > c.start; }
+          var prev = c[key];
+          if (ok) { c[key] = v; ok = c.end > c.start; if (!ok) c[key] = prev; }
           inp.classList.toggle('bad', !ok);
           if (ok) { inp.value = C.fmtTime(v, fps); c.words = C.retime(c); S.dirty = true; }
         });
       }
-      onTime(tIn, 'start'); onTime(tOut, 'end');
-      var row = el('div', { class: 'tr-row' }, [
-        el('div', { class: 'times' }, [tIn, tOut]), ta,
-        el('button', { class: 'del', title: 'Delete', html: CQ.icons.trash, onclick: function () { S.captions.splice(i, 1); S.dirty = true; renderTranscript(); } }),
-        words
-      ]);
-      row.style.animationDelay = Math.min(i, 12) * 0.02 + 's';
-      list.appendChild(row);
+      onTime(a, 'start'); onTime(b, 'end');
+      list.appendChild(el('div', { class: 'row' }, [el('div', { class: 'times' }, [a, b]), ta,
+        el('button', { class: 'del', title: 'Delete', html: CQ.icons.trash, onclick: function () { S.captions.splice(i, 1); S.dirty = true; renderTranscript(); } })]));
       setTimeout(fit, 0);
     });
     V.create.disabled = !S.captions.length;
   }
 
   function setGrouping(g) {
-    var apply = function () { S.grouping = g; U.store.set('grouping', g); regroup(); };
-    if (S.dirty) U.modal({ kind: 'warn', title: 'Regroup captions?', text: 'Text edits will be replaced by the original transcript.', actions: [{ label: 'Cancel' }, { label: 'Regroup', primary: true, onClick: apply }] });
+    var apply = function () { S.grouping = g; U.store.set('grouping', g); regroup(); renderGroupSeg(); };
+    if (S.dirty) U.dialog({ kind: 'warn', title: 'Regroup captions?', text: 'Your text edits will be replaced.', actions: [{ label: 'Cancel', onClick: function () { renderGroupSeg(); } }, { label: 'Regroup', primary: true, onClick: apply }] });
     else apply();
+  }
+  function renderGroupSeg() {
+    var items = [{ label: 'Auto', value: 'auto' }, { label: '1', value: 1 }, { label: '2', value: 2 }, { label: '4', value: 4 }, { label: '5', value: 5 }];
+    var seg = U.seg(items.concat([{ label: 'Custom', value: 'custom' }]), S.grouping, setGrouping);
+    var cbtn = seg.lastChild;
+    var ci = el('input', { type: 'number', min: 1, max: C.CUSTOM_MAX, value: S.custom });
+    ci.addEventListener('click', function (e) { e.stopPropagation(); });
+    ci.addEventListener('change', function () {
+      var v = Math.round(Number(ci.value));
+      if (!(v >= 1 && v <= C.CUSTOM_MAX)) { ci.value = S.custom; U.toast('warn', 'Words per caption', '1 to ' + C.CUSTOM_MAX); return; }
+      S.custom = v; U.store.set('customWords', v); setGrouping('custom');
+    });
+    cbtn.className += ' custom';
+    if (S.grouping === 'custom') cbtn.appendChild(ci);
+    if (V.groupSeg && V.groupSeg.parentNode) V.groupSeg.parentNode.replaceChild(seg, V.groupSeg);
+    V.groupSeg = seg;
   }
 
   /* ---------------------------------------------------------- create layers */
-  var POS = { tl: [0.15, 0.14], tc: [0.5, 0.14], tr: [0.85, 0.14], ml: [0.15, 0.5], mc: [0.5, 0.5], mr: [0.85, 0.5], bl: [0.15, 0.82], bc: [0.5, 0.82], br: [0.85, 0.82] };
-
-  function validateRows() {
-    var bad = 0;
-    U.$$('.tr-row .times input', V.trList).forEach(function (i) { if (i.classList.contains('bad')) bad++; });
-    S.captions.forEach(function (c) { if (!(c.end > c.start) || !String(c.text).trim()) bad++; });
-    return bad;
-  }
-
   function createLayers() {
     if (!S.captions.length) return;
-    var bad = validateRows();
-    if (bad) { U.modal({ kind: 'warn', title: 'Fix highlighted rows', text: bad + ' caption(s) have empty text or invalid times.' }); return; }
-    CQ.host.call('getSelection').then(function (sel) {
-      if (!sel.comp) { U.modal({ kind: 'warn', title: 'No composition', text: 'Open the composition you transcribed.' }); return; }
-      var go = function () { doCreate(sel.comp); };
-      if (S.plan && sel.comp.id !== S.plan.layer.compId && S.plan.compId && sel.comp.id !== S.plan.compId) {
-        U.modal({ kind: 'warn', title: 'Different composition', text: 'The active composition is not the one you transcribed. Create the captions here anyway?', actions: [{ label: 'Cancel' }, { label: 'Create here', primary: true, onClick: go }] });
-      } else go();
-    });
-  }
-
-  function doCreate(comp) {
-    var st = S.style, k = comp.height / 1080;
-    var pos = POS[st.pos] || POS.bc;
-    var justify = st.pos[1] === 'l' ? 'left' : st.pos[1] === 'r' ? 'right' : 'center';
+    var bad = U.$$('.row .times input.bad', V.list).length + S.captions.filter(function (c) { return !(c.end > c.start) || !String(c.text).trim(); }).length;
+    if (bad) { U.dialog({ kind: 'warn', title: 'Check the transcript', text: 'Some captions have no text or invalid times. Fix the rows marked in red.' }); return; }
+    var st = S.style;
     var preset = st.anim !== 'none' ? CQ.presets.byId(st.anim) : null;
-    var payload = {
-      captions: S.captions.map(function (c) {
-        var text = C.wrapLines(st.caps ? c.text.toUpperCase() : c.text, st.maxChars);
-        var o = { text: text, start: c.start, end: c.end };
-        if (st.hlOn && c.words && c.words.length) o.highlightExpr = CQ.builder.highlightExpr(c.words, st.hlMode);
-        return o;
-      }),
-      style: { font: st.font, size: st.size * k, fill: st.fill, stroke: st.strokeOn ? { color: st.stroke, width: st.strokeWidth * k } : null, tracking: st.tracking, justify: justify },
-      position: [comp.width * pos[0] + st.offX * k, comp.height * pos[1] + st.offY * k],
-      box: st.boxOn ? { color: st.box, opacity: st.boxOpacity, padX: st.boxPadX * k, padY: st.boxPadY * k, round: st.boxRound * k } : null,
-      shadow: st.shadowOn ? { fx: 'shadow', color: '#000000', opacity: 70, distance: 4, softness: 10 } : null,
-      highlight: st.hlOn ? { color: st.hl } : null,
-      preset: preset ? CQ.builder.build(preset, { useFont: false, useColors: false, speed: st.speed }) : null,
-      aboveLayerIndex: S.plan ? S.plan.layer.index : null,
-      prefix: 'Caption'
-    };
     if (preset && (preset.needs || []).length) {
       var miss = preset.needs.filter(function (n) { return !CQ.app.plugins[n]; });
-      if (miss.length) { CQ.animate.pluginModal(preset, miss); return; }
+      if (miss.length) { CQ.animate.pluginDialog(preset, miss); return; }
     }
-    V.create.classList.add('loading');
-    CQ.host.call('createCaptions', payload).then(function (r) {
-      V.create.classList.remove('loading');
-      if (!r.ok) { U.modal({ kind: 'err', title: 'Could not create captions', text: r.message, list: r.hint ? [r.hint] : null }); return; }
-      var fontMissing = (r.warnings || []).filter(function (w) { return w.indexOf('FONT_MISSING') === 0; });
-      U.toast('ok', r.created + ' caption layers created', 'Ctrl+Z undoes them in one step.');
-      if (fontMissing.length) CQ.app.fontMissing(fontMissing.map(function (w) { return w.split(':')[1]; }));
-    }, function (e) { V.create.classList.remove('loading'); U.modal({ kind: 'err', title: 'After Effects did not respond', text: e.message }); });
+    CQ.host.call('getSelection').then(function (sel) {
+      if (!sel.comp) { U.dialog({ kind: 'warn', title: 'No composition open', text: 'Open the composition you transcribed.' }); return; }
+      var k = sel.comp.height / 1080, W = sel.comp.width, H = sel.comp.height, m = st.margin * k;
+      var x = st.justify === 'left' ? m : st.justify === 'right' ? W - m : W / 2;
+      var y = st.place === 'top' ? m : st.place === 'middle' ? H / 2 : H - m;
+      var payload = {
+        captions: S.captions.map(function (c) {
+          var o = { text: C.wrapLines(c.text, st.maxChars), start: c.start, end: c.end };
+          if (st.hlOn && c.words && c.words.length) o.highlightExpr = CQ.builder.highlightExpr(c.words, 'current');
+          return o;
+        }),
+        style: { font: st.font, size: st.size * k, fill: st.fill, stroke: st.strokeOn ? { color: st.stroke, width: st.strokeWidth * k } : null, tracking: st.tracking, justify: st.justify, caps: st.caps },
+        position: [x, y], anchor: { v: st.place, h: st.justify },
+        box: st.boxOn ? { color: st.box, opacity: st.boxOpacity, padX: 24 * k, padY: 12 * k, round: 8 * k } : null,
+        shadow: st.shadowOn ? { fx: 'shadow', color: '#000000', opacity: 70, distance: 3, softness: 8 } : null,
+        highlight: st.hlOn ? { color: st.hl } : null,
+        preset: preset ? CQ.builder.build(preset, { useFont: false, useColors: false, speed: st.speed }) : null,
+        aboveLayerIndex: S.plan ? S.plan.layer.index : null,
+        prefix: 'Caption'
+      };
+      V.create.setBusy(true);
+      return CQ.host.call('createCaptions', payload).then(function (r) {
+        V.create.setBusy(false);
+        if (!r.ok) { U.dialog({ kind: 'err', title: 'Could not create the captions', text: 'Nothing was changed. Check that the composition is open and not locked, then try again.' }); CQ.services.Log.error(null, 'createCaptions ' + r.code + ' ' + r.message); return; }
+        U.toast('ok', r.created + ' caption layers created', 'Press Ctrl+Z to undo.');
+        var fonts = (r.warnings || []).filter(function (w) { return w.indexOf('FONT_MISSING') === 0; });
+        if (fonts.length) CQ.app.fontMissing();
+      });
+    }).catch(function () { V.create.setBusy(false); U.dialog({ kind: 'err', title: 'After Effects is not responding', text: 'Wait a moment and try again.' }); });
   }
 
-  /* ---------------------------------------------------------- style + preview */
+  /* ---------------------------------------------------------- preview */
   function captionPreset() {
     var st = S.style;
     var base = st.anim !== 'none' ? CQ.presets.byId(st.anim) : null;
-    var p = base ? JSON.parse(JSON.stringify(base)) : { id: 'static', name: 'Static', font: st.font, anims: [{ based: 'chars', props: { opacity: 0 }, t: { phase: 'both', dur: 0.15, overlap: 1 } }], fx: [] };
+    var p = base ? JSON.parse(JSON.stringify(base)) : { id: 'static', name: 'Static', anims: [], fx: [] };
     p.font = st.font;
-    var text = (S.captions[0] && S.captions[0].text) || 'Your captions look like this';
+    var text = (S.captions[0] && S.captions[0].text) || 'Your captions will look like this';
     p.sample = C.wrapLines(text, st.maxChars).replace(/\r/g, '\n');
     p.style = { size: st.size, fill: st.fill, tracking: st.tracking, caps: st.caps, stroke: st.strokeOn ? { color: st.stroke, width: st.strokeWidth } : null, leading: 1.15 };
     p.anims = (p.anims || []).filter(function (a) { return !(a.props && a.props.fill) && !a.wordColors; });
     if (st.hlOn) p.anims.push({ based: 'words', props: { fill: st.hl }, t: { phase: 'karaoke', step: 0.35 } });
     p.extras = (p.extras || []).slice();
-    if (st.boxOn) p.extras.unshift({ type: 'captionBox', color: st.box, opacity: st.boxOpacity / 100, pad: [st.boxPadX, st.boxPadY], round: st.boxRound });
-    p.bg = '#151a24';
-    if (st.shadowOn) p.fx = (p.fx || []).concat([{ fx: 'shadow', color: '#000000', opacity: 70, distance: 4, softness: 10 }]);
+    if (st.boxOn) p.extras.unshift({ type: 'captionBox', color: st.box, opacity: st.boxOpacity / 100, pad: [24, 12], round: 8 });
+    p.bg = '#1a1a1a';
+    if (st.shadowOn) p.fx = (p.fx || []).concat([{ fx: 'shadow', color: '#000000', opacity: 70, distance: 3, softness: 8 }]);
     return p;
   }
-
   function refreshPreview() {
     if (!player) return;
-    var pos = POS[S.style.pos] || POS.bc;
     player.setPreset(captionPreset());
-    player.setOptions({ offsetX: (pos[0] - 0.5) * 1920 * 0.86 + S.style.offX, offsetY: (pos[1] - 0.5) * 1080 + S.style.offY, speed: S.style.speed, fitWidth: S.style.pos[1] === 'c' ? 0.86 : 0.55 });
+    player.setOptions({ speed: S.style.speed, place: { v: S.style.place, h: S.style.justify, margin: S.style.margin }, justify: S.style.justify, keepSize: true });
   }
 
   function fontOptions() {
-    var F = CQ.presets.FONTS, bundled = Object.keys(F).map(function (ps) { return { value: ps, label: F[ps].css }; });
-    var groups = [{ group: 'CyriqCap fonts', items: bundled }];
-    if (CQ.app.aeFonts && CQ.app.aeFonts.length) groups.push({ group: 'Installed in After Effects', items: CQ.app.aeFonts.map(function (f) { return { value: f.ps, label: f.family + ' ' + f.style }; }) });
+    var F = CQ.presets.FONTS;
+    var groups = [{ group: 'CyriqCap fonts', items: Object.keys(F).map(function (ps) { return { value: ps, label: F[ps].css }; }) }];
+    if (CQ.app.aeFonts && CQ.app.aeFonts.length) groups.push({ group: 'Installed fonts', items: CQ.app.aeFonts.map(function (f) { return { value: f.ps, label: f.family + ' ' + f.style }; }) });
     return groups;
   }
 
-  function styleCard() {
+  function styleSection() {
     var st = S.style;
     function set(k) { return function (v) { st[k] = v; saveStyle(); }; }
     var canvas = el('canvas', { width: 640, height: 360 });
     player = new CQ.preview.Player(canvas, captionPreset(), { fps: 30 });
     U.watch(canvas, player);
-    var posgrid = el('div', { class: 'posgrid' });
-    Object.keys(POS).forEach(function (k) {
-      var b = el('button', { class: k === st.pos ? 'active' : '', title: k });
-      b.addEventListener('click', function () { U.$$('button', posgrid).forEach(function (x) { x.classList.remove('active'); }); b.classList.add('active'); st.pos = k; saveStyle(); });
-      posgrid.appendChild(b);
-    });
+    refreshPreview();
     V.fontSel = U.select(fontOptions(), st.font, set('font'));
     var anims = [{ value: 'none', label: 'None' }].concat(CQ.presets.CATEGORIES.slice(1).map(function (cat) {
-      return { group: cat, items: CQ.presets.list.filter(function (p) { return p.cat === cat; }).map(function (p) { return { value: p.id, label: p.name + ((p.needs || []).length ? ' ★' : '') }; }) };
+      return { group: cat, items: CQ.presets.list.filter(function (p) { return p.cat === cat; }).map(function (p) { return { value: p.id, label: p.name }; }) };
     }));
-    var tgl = function (label, key) { return el('div', { class: 'toggle-row field' }, [el('span', { class: 'lbl', text: label }), U.toggle(st[key], set(key))]); };
-
-    return el('div', { class: 'card' }, [
-      el('h3', { text: 'Style' }),
-      el('div', { class: 'stage-wrap' }, [canvas, el('span', { class: 'tag', text: 'Preview' })]),
-      el('div', { class: 'row' }, [U.field('Font', V.fontSel), U.field('Size', U.number(st.size, 10, 400, 1, set('size')), 'xs')]),
-      el('div', { class: 'row' }, [U.field('Fill', U.swatch(st.fill, set('fill')), 'sm'), U.field('Stroke', U.swatch(st.stroke, set('stroke')), 'sm'), U.field('Width', U.number(st.strokeWidth, 0, 60, 1, set('strokeWidth')), 'xs')]),
-      el('div', { class: 'row' }, [tgl('Stroke', 'strokeOn'), tgl('Shadow', 'shadowOn')]),
-      el('div', { class: 'row' }, [U.field('Tracking', U.number(st.tracking, -200, 1000, 10, set('tracking')), 'sm'), U.field('Line length', U.number(st.maxChars, 0, 120, 1, function (v) { st.maxChars = v; saveStyle(); }), 'sm'), U.field('Case', U.seg([{ label: 'Aa', value: false }, { label: 'AA', value: true }], st.caps, set('caps')), 'sm')]),
-      el('div', { class: 'row' }, [el('div', { class: 'field', style: { flex: '0 0 auto' } }, [el('label', { text: 'Position' }), posgrid]),
-        el('div', { class: 'field' }, [el('label', { text: 'Offset X' }), U.number(st.offX, -1500, 1500, 5, set('offX')), el('label', { text: 'Offset Y', style: { marginTop: '.4rem' } }), U.number(st.offY, -1000, 1000, 5, set('offY'))])]),
-      el('div', { class: 'row' }, [tgl('Background box', 'boxOn')]),
-      el('div', { class: 'row' }, [U.field('Box', U.swatch(st.box, set('box')), 'sm'), U.field('Opacity', U.number(st.boxOpacity, 0, 100, 5, set('boxOpacity')), 'xs'), U.field('Pad', U.number(st.boxPadX, 0, 200, 2, function (v) { st.boxPadX = v; st.boxPadY = Math.round(v * 0.55); saveStyle(); }), 'xs'), U.field('Round', U.number(st.boxRound, 0, 100, 1, set('boxRound')), 'xs')]),
-      el('div', { class: 'row' }, [tgl('Word highlight', 'hlOn')]),
-      el('div', { class: 'row' }, [U.field('Highlight', U.swatch(st.hl, set('hl')), 'sm'), U.field('Mode', U.seg([{ label: 'Current', value: 'current' }, { label: 'Fill up', value: 'progressive' }], st.hlMode, set('hlMode')))]),
-      el('div', { class: 'row' }, [U.field('Animation', U.select(anims, st.anim, set('anim'))), U.field('Speed', U.number(st.speed, 0.25, 4, 0.25, set('speed')), 'xs')])
+    return el('div', { class: 'section' }, [
+      el('div', { class: 'title', text: 'Style' }),
+      el('div', { class: 'stage' }, [canvas]),
+      el('div', { class: 'grid3' }, [
+        U.field('Font', V.fontSel, 'span2'), U.field('Size', U.number(st.size, 8, 400, 1, set('size'))),
+        U.field('Fill', U.color(st.fill, set('fill'))), U.field('Stroke', U.color(st.stroke, set('stroke'))), U.field('Stroke width', U.number(st.strokeWidth, 0, 60, 1, set('strokeWidth'))),
+        U.field('Position', U.seg([{ icon: 'alignTop', value: 'top', title: 'Top' }, { icon: 'alignMid', value: 'middle', title: 'Middle' }, { icon: 'alignBot', value: 'bottom', title: 'Bottom' }], st.place, set('place'))),
+        U.field('Margin', U.number(st.margin, 0, 1000, 5, set('margin'))),
+        U.field('Align', U.seg([{ icon: 'alignL', value: 'left', title: 'Left' }, { icon: 'alignC', value: 'center', title: 'Center' }, { icon: 'alignR', value: 'right', title: 'Right' }], st.justify, set('justify'))),
+        U.field('Tracking', U.number(st.tracking, -200, 1000, 10, set('tracking'))), U.field('Line length', U.number(st.maxChars, 0, 120, 1, set('maxChars'))),
+        U.field('Case', U.seg([{ label: 'Aa', value: false, title: 'As typed' }, { label: 'AA', value: true, title: 'Uppercase' }], st.caps, set('caps'))),
+        U.field('Box', U.color(st.box, set('box'))), U.field('Box opacity', U.number(st.boxOpacity, 0, 100, 5, set('boxOpacity'))), U.field('Highlight', U.color(st.hl, set('hl'))),
+        el('div', { class: 'span3 line' }, [U.check('Stroke', st.strokeOn, set('strokeOn')), U.check('Shadow', st.shadowOn, set('shadowOn')), U.check('Box', st.boxOn, set('boxOn')), U.check('Highlight word', st.hlOn, set('hlOn'))]),
+        U.field('Animation', U.select(anims, st.anim, set('anim')), 'span2'), U.field('Speed', U.number(st.speed, 0.25, 4, 0.25, set('speed')))
+      ])
     ]);
   }
 
   /* ---------------------------------------------------------- build */
-  function build(root) {
-    V.source = el('div', { class: 'card source empty' });
-    V.engine = U.select([{ value: 'whisperx', label: 'WhisperX' }, { value: 'whispercpp', label: 'Whisper.cpp' }], S.engine, function (v) { S.engine = v; U.store.set('engine', v); });
-    var langs = CQ.languages.map(function (l) { return { value: l.code, label: l.name }; });
-    V.lang = U.select(langs, S.lang, function (v) { S.lang = v; U.store.set('lang', v); });
-    V.gen = el('button', { class: 'btn primary block', onclick: generate }, [U.icon('wand'), 'Generate Captions']);
-    V.progStage = el('span', { class: 'stage' });
-    V.pct = el('span', { class: 'pct' });
-    V.barFill = el('i');
-    V.bar = el('div', { class: 'bar' }, [V.barFill]);
-    V.steps = el('div', { class: 'steps' }, STEPS.map(function (s) { return el('span', { text: s[1] }); }));
-    V.cancel = el('button', { class: 'btn ghost danger', onclick: cancel }, [U.icon('stop'), 'Cancel']);
-    V.prog = el('div', { class: 'card progress hidden' }, [el('div', { class: 'head' }, [V.progStage, V.pct, V.cancel]), V.bar, V.steps]);
-
-    V.groupChips = el('div', { class: 'chips' });
-    [['auto', 'Auto'], [1, '1'], [2, '2'], [4, '4'], [5, '5']].forEach(function (g) {
-      V.groupChips.appendChild(el('button', { class: 'chip', 'data-g': g[0], text: g[1], onclick: function () { setGrouping(g[0]); } }));
-    });
-    var customInput = el('input', { type: 'number', min: 1, max: C.CUSTOM_MAX, value: S.custom });
-    customInput.addEventListener('click', function (e) { e.stopPropagation(); });
-    customInput.addEventListener('change', function () {
-      var v = Math.round(Number(customInput.value));
-      if (!(v >= 1 && v <= C.CUSTOM_MAX)) { customInput.value = S.custom; U.toast('warn', 'Custom', '1 – ' + C.CUSTOM_MAX + ' words'); return; }
-      S.custom = v; U.store.set('customWords', v); if (S.grouping === 'custom') regroup(); else setGrouping('custom');
-    });
-    V.groupChips.appendChild(el('button', { class: 'chip', 'data-g': 'custom', onclick: function () { setGrouping('custom'); } }, ['Custom', customInput]));
-
-    V.trCount = el('span', { class: 'badge info' });
-    V.trBadge = el('span');
-    V.trList = el('div', { class: 'tr-list' });
-    V.trCard = el('div', { class: 'card hidden' }, [
-      el('h3', null, [el('span', { class: 'grow', text: 'Transcript' }), V.trCount, V.trBadge]),
-      el('div', { class: 'lbl', text: 'Words per caption' }),
-      V.groupChips, V.trList
+  function build(rootEl) {
+    V.source = el('div', { class: 'source' });
+    V.modelSel = el('select', { class: 'input' });
+    V.lang = U.select(CQ.languages.map(function (l) { return { value: l.code, label: l.name }; }), S.lang, function (v) { S.lang = v; U.store.set('lang', v); });
+    V.gen = U.btn('Generate Captions', { cls: 'primary block', icon: 'captions', onClick: generate });
+    V.progLabel = el('span'); V.pct = el('span', { class: 'pct' }); V.barFill = el('i'); V.bar = el('div', { class: 'bar' }, [V.barFill]);
+    V.prog = el('div', { class: 'progress hidden' }, [el('div', { class: 'top' }, [V.progLabel, V.pct, el('button', { class: 'link', text: 'Cancel', onclick: function () { if (S.job) S.job.cancel(); } })]), V.bar]);
+    V.trInfo = el('span', { class: 'tag' });
+    V.list = el('div', { class: 'list' });
+    V.groupSeg = el('div');
+    V.tr = el('div', { class: 'section hidden' }, [
+      el('div', { class: 'title' }, ['Transcript', el('span', { class: 'spacer' }), V.trInfo]),
+      U.field('Words per caption', V.groupSeg), el('div', { style: { height: '.5rem' } }), V.list
     ]);
-    V.create = el('button', { class: 'btn primary block', disabled: true, onclick: createLayers }, [U.icon('text'), 'Create Text Layers']);
-
-    var left = el('div', null, [
+    V.create = U.btn('Create Text Layers', { cls: 'primary block', icon: 'text', onClick: createLayers });
+    V.create.disabled = true;
+    rootEl.appendChild(el('div', { class: 'section' }, [
       V.source,
-      el('div', { class: 'card' }, [el('div', { class: 'row' }, [U.field('Engine', V.engine), U.field('Language', V.lang)]), V.gen]),
-      V.prog, V.trCard
-    ]);
-    var right = el('div', null, [styleCard(), el('div', { class: 'sticky-action' }, [V.create])]);
-    root.appendChild(el('div', { class: 'cap-layout' }, [left, right]));
-    renderSource(null);
-    root.ownerDocument.defaultView.addEventListener('beforeunload', function () { if (S.job) S.job.cancel(); });
+      el('div', { class: 'grid2' }, [
+        el('div', { class: 'field' }, [el('label', { text: 'Model' }), el('div', { class: 'line' }, [el('div', { class: 'grow' }, [V.modelSel]), U.btn('', { cls: 'icon', icon: 'download', title: 'Get more models', onClick: function () { CQ.modelsUI.open(); } })])]),
+        U.field('Language', V.lang)
+      ]),
+      el('div', { style: { height: '.6rem' } }), V.gen, V.prog
+    ]));
+    rootEl.appendChild(V.tr);
+    rootEl.appendChild(styleSection());
+    rootEl.appendChild(V.create);
+    renderGroupSeg(); renderModels(); renderSource(null);
+    root.addEventListener('beforeunload', function () { if (S.job) S.job.cancel(); });
   }
 
   CQ.captionsView = {
     build: build,
     onSelection: function (sel) { if (V.source) renderSource(sel); },
+    onModels: function () { if (V.modelSel) renderModels(); },
     onFonts: function () { if (V.fontSel) { var nv = U.select(fontOptions(), S.style.font, function (v) { S.style.font = v; saveStyle(); }); V.fontSel.parentNode.replaceChild(nv, V.fontSel); V.fontSel = nv; } },
-    onEngines: function (eng) { if (!V.engine) return; U.$$('option', V.engine).forEach(function (o) { o.disabled = !eng[o.value]; o.textContent = (o.value === 'whisperx' ? 'WhisperX' : 'Whisper.cpp') + (eng[o.value] ? '' : ' (missing)'); }); },
-    state: S,
-    _test: { regroup: regroup }
+    state: S
   };
 })(typeof window !== 'undefined' ? window : global);

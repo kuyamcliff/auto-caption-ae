@@ -1,0 +1,36 @@
+<!doctype html>
+<!-- Original, simplified illustration of a compositing timeline used in the
+     Help tab (not a screenshot of any real application). -->
+<html><head><meta charset="utf-8">
+<link rel="stylesheet" href="../../extension/com.cyriq.cyriqcap/css/fonts.css">
+<style>
+  body { margin: 0; background: #1d1f24; font: 13px "Inter UI", sans-serif; color: #c9ced8; width: 840px; height: 420px; overflow: hidden; }
+  .bar { height: 34px; display: flex; align-items: center; padding: 0 14px; background: #26292f; border-bottom: 1px solid #111; color: #9aa3b5; }
+  .bar b { color: #e6e9ef; margin-right: 16px; font-weight: 600; }
+  .tc { font: 600 18px "Inter UI"; color: #6ea8ff; margin-right: 24px; }
+  .head { display: flex; height: 26px; align-items: center; background: #23262c; border-bottom: 1px solid #111; color: #7d8697; font-size: 11px; }
+  .head .c1 { width: 300px; padding-left: 14px; } .ruler { flex: 1; position: relative; height: 100%; }
+  .ruler span { position: absolute; top: 6px; font-size: 10px; color: #6b7384; }
+  .row { display: flex; height: 38px; align-items: center; border-bottom: 1px solid #16181c; }
+  .row .c1 { width: 300px; display: flex; align-items: center; padding-left: 14px; }
+  .row .num { width: 22px; color: #6b7384; } .row .sw { width: 12px; height: 12px; border-radius: 3px; margin-right: 10px; }
+  .row .ico { width: 18px; color: #8d96a8; margin-right: 8px; font-size: 12px; }
+  .row.sel { background: #2f3d57; } .row.sel .name { color: #fff; font-weight: 600; }
+  .track { flex: 1; position: relative; height: 100%; }
+  .clip { position: absolute; top: 8px; height: 22px; border-radius: 3px; }
+  .wave { position: absolute; inset: 4px 6px; background: repeating-linear-gradient(90deg, rgba(255,255,255,.35) 0 2px, transparent 2px 5px); -webkit-mask: linear-gradient(180deg, transparent 0, #000 40%, #000 60%, transparent 100%); }
+  .ph { position: absolute; top: 60px; bottom: 0; left: 470px; width: 2px; background: #4c8dff; }
+  .ph::before { content: ""; position: absolute; top: -8px; left: -6px; border: 7px solid transparent; border-top-color: #4c8dff; }
+  .note { position: absolute; right: 14px; bottom: 10px; font-size: 11px; color: #5d6575; }
+</style></head><body>
+  <div class="bar"><span class="tc">0:00:04:12</span><b>Main Edit</b> Timeline</div>
+  <div class="head"><div class="c1">#  Layer name</div><div class="ruler"><span style="left:4%">0s</span><span style="left:24%">5s</span><span style="left:44%">10s</span><span style="left:64%">15s</span><span style="left:84%">20s</span></div></div>
+  <div class="row"><div class="c1"><span class="num">1</span><span class="sw" style="background:#c8a24a"></span><span class="ico">T</span><span class="name">TITLE</span></div><div class="track"><div class="clip" style="left:2%;width:28%;background:#8a7440"></div></div></div>
+  <div class="row"><div class="c1"><span class="num">2</span><span class="sw" style="background:#7aa2d8"></span><span class="ico">▣</span><span class="name">B-roll (precomp)</span></div><div class="track"><div class="clip" style="left:30%;width:40%;background:#4f6c94"></div></div></div>
+  <div class="row sel"><div class="c1"><span class="num">3</span><span class="sw" style="background:#7fc07a"></span><span class="ico">▶</span><span class="name">interview_take2.mp4</span></div><div class="track"><div class="clip" style="left:2%;width:92%;background:#4f8a4b"><div class="wave"></div></div></div></div>
+  <div class="row"><div class="c1"><span class="num">4</span><span class="sw" style="background:#b07ad8"></span><span class="ico">♪</span><span class="name">music.wav</span></div><div class="track"><div class="clip" style="left:2%;width:92%;background:#6d4f8a"><div class="wave"></div></div></div></div>
+  <div class="row"><div class="c1"><span class="num">5</span><span class="sw" style="background:#888"></span><span class="ico">■</span><span class="name">Background</span></div><div class="track"><div class="clip" style="left:2%;width:92%;background:#555"></div></div></div>
+  <div class="ph"></div>
+  <div class="note">Illustration</div>
+  <script>document.fonts.ready.then(() => { window.done = true; });</script>
+</body></html>

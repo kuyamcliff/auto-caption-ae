@@ -1,233 +1,179 @@
-/* Text Animation & Effects tab. Independent from Auto Caption. */
+/* Animate tab: presets for any selected text layers. Independent from Captions. */
 (function (root) {
   'use strict';
   var CQ = root.CQ;
   var U = CQ.ui, el = U.el;
 
   var S = {
-    cat: U.store.get('animCat', 'All'), q: '', selected: null,
-    opts: U.store.get('animOpts', { speed: 1, useFont: true, useColors: true, fill: '#ffffff', glow: '#2a7bff', overrideFill: false, overrideGlow: false }),
-    text: U.store.get('animText', ''), textLayers: 0
+    cat: U.store.get('animCat', 'All'), q: '', selected: null, textLayers: 0,
+    opts: U.store.get('animOpts2', { speed: 1, useFont: true, useColors: true, overrideFill: false, fill: '#ffffff' }),
+    text: U.store.get('animText', '')
   };
-  var V = {}, cards = [], bigPlayer = null;
+  var V = {}, cards = [], big = null;
 
-  function saveOpts() { U.store.set('animOpts', S.opts); updateBig(); }
-
-  function needsLabel(p) { return (p.needs || []).map(function (n) { return CQ.presets.PLUGINS[n].name.replace('Boris FX ', ''); }).join(' + '); }
+  function save() { U.store.set('animOpts2', S.opts); updateBig(); }
   function missing(p) { return (p.needs || []).filter(function (n) { return !CQ.app.plugins[n]; }); }
+  function needsLabel(p) { return (p.needs || []).map(function (n) { return CQ.presets.PLUGINS[n].name.replace('Boris FX ', ''); }).join(', '); }
 
-  function pluginModal(p, miss) {
-    return U.modal({
-      kind: 'err', icon: 'plug', title: p.name + ' needs a plug-in',
-      text: 'This preset uses effects that are not installed in your After Effects:',
-      list: miss.map(function (n) { var pl = CQ.presets.PLUGINS[n]; return pl.name + ' (' + pl.vendor + ')'; }),
-      actions: [{ label: 'Close' }, { label: 'Re-scan plug-ins', primary: true, onClick: function () { CQ.app.scanPlugins(true).then(function () { renderCards(); }); } }]
+  function pluginDialog(p, miss) {
+    return U.dialog({
+      kind: 'warn', icon: 'plug', title: p.name + ' needs a plug-in',
+      text: 'Install the plug-in below, then scan again. Nothing was changed in your project.',
+      list: miss.map(function (n) { var pl = CQ.presets.PLUGINS[n]; return pl.name + ' by ' + pl.vendor; }),
+      actions: [{ label: 'Close' }, { label: 'Scan Again', primary: true, onClick: function () { CQ.app.scanPlugins(true).then(renderCards); } }]
     });
   }
 
-  /* ---------------------------------------------------------- grid */
   function visible() {
     var q = S.q.trim().toLowerCase();
     return CQ.presets.list.filter(function (p) {
       if (S.cat !== 'All' && p.cat !== S.cat) return false;
-      if (q && (p.name + ' ' + p.cat + ' ' + p.id).toLowerCase().indexOf(q) < 0) return false;
-      return true;
+      return !q || (p.name + ' ' + p.cat).toLowerCase().indexOf(q) >= 0;
     });
   }
 
   function renderCards() {
     cards.forEach(function (c) { c.player.stop(); });
     cards = [];
-    V.grid.innerHTML = '';
+    V.cards.innerHTML = '';
     var list = visible();
-    V.count.textContent = list.length;
-    if (!list.length) {
-      V.grid.appendChild(el('div', { class: 'empty-state', style: { gridColumn: '1 / -1' } }, [el('span', { html: CQ.icons.search }), el('b', { text: 'No presets found' })]));
-      return;
-    }
+    V.count.textContent = list.length + ' presets';
     list.forEach(function (p, i) {
-      var cv = el('canvas', { width: 320, height: 180 });
+      var cv = el('canvas', { width: 288, height: 162 });
       var miss = missing(p);
-      var card = el('div', { class: 'preset' + (S.selected && S.selected.id === p.id ? ' active' : ''), title: p.name }, [
-        cv,
-        el('div', { class: 'cap' }, [el('span', { class: 'nm', text: p.name }), (p.needs || []).length ? el('span', { class: 'need' + (miss.length ? ' missing' : ''), text: needsLabel(p) }) : null])
-      ]);
-      card.style.animationDelay = Math.min(i, 16) * 0.025 + 's';
+      var card = el('div', { class: 'card' + (S.selected && S.selected.id === p.id ? ' active' : ''), title: p.name }, [cv,
+        el('div', { class: 'nm' }, [el('span', { text: p.name }), (p.needs || []).length ? el('i', { class: 'plug' + (miss.length ? ' missing' : ''), title: 'Needs ' + needsLabel(p), html: CQ.icons.plug }) : null])]);
       var pl = new CQ.preview.Player(cv, p, { fps: 24, text: S.text || null });
-      pl.paused = false;
-      // stagger start so cards don't animate in lockstep
-      pl._t = (i * 0.37) % pl.tl.total;
-      pl.draw(pl.tl.pad + pl.tl.inDur + 0.4);
-      U.watch(cv, pl);
-      card.addEventListener('click', function () { select(p, card); });
-      V.grid.appendChild(card);
+      // still frame; plays while the pointer is over the card
+      pl.paused = true;
+      pl.stop(true);
+      card.addEventListener('mouseenter', function () { pl._t = 0; pl.start(); });
+      card.addEventListener('mouseleave', function () { pl.stop(true); });
+      card.addEventListener('click', function () { select(p); });
+      V.cards.appendChild(card);
       cards.push({ p: p, card: card, player: pl });
     });
   }
 
-  function select(p, card) {
-    var miss = missing(p);
+  function select(p) {
     S.selected = p;
     cards.forEach(function (c) { c.card.classList.toggle('active', c.p.id === p.id); });
     renderDetail();
     var view = document.getElementById('view-animate');
-    if (view && root.innerWidth < 760 && view.scrollTop > 0) view.scrollTo ? view.scrollTo({ top: 0, behavior: 'smooth' }) : (view.scrollTop = 0);
-    if (miss.length) pluginModal(p, miss);
+    if (root.innerWidth < 760 && view) view.scrollTop = 0;
+    var miss = missing(p);
+    if (miss.length) pluginDialog(p, miss);
   }
 
-  /* ---------------------------------------------------------- detail */
-  function previewOpts() {
-    var o = { speed: S.opts.speed, text: S.text || null, fps: 30 };
-    return o;
-  }
-
-  function effectivePreset() {
+  function effective() {
     var p = JSON.parse(JSON.stringify(S.selected));
-    if (S.opts.overrideFill) { p.style.fill = S.opts.fill; if (p.style.lineColors) p.style.lineColors = p.style.lineColors.map(function (c, i) { return i === p.style.lineColors.length - 1 ? S.opts.fill : c; }); }
-    if (S.opts.overrideGlow) (p.fx || []).forEach(function (f) { if (f.fx === 'glow' && f.color !== 'auto') f.color = S.opts.glow; });
+    if (S.opts.overrideFill) { p.style.fill = S.opts.fill; if (p.style.lineColors) p.style.lineColors = p.style.lineColors.map(function (c, i, a) { return i === a.length - 1 ? S.opts.fill : c; }); }
     return p;
   }
-
-  function updateBig() {
-    if (!bigPlayer || !S.selected) return;
-    bigPlayer.setPreset(effectivePreset());
-    bigPlayer.setOptions(previewOpts());
-  }
+  function updateBig() { if (big && S.selected) { big.setPreset(effective()); big.setOptions({ speed: S.opts.speed, text: S.text || null }); } }
 
   function renderDetail() {
     V.detail.innerHTML = '';
-    if (bigPlayer) { bigPlayer.stop(); bigPlayer = null; }
+    if (big) { big.stop(); big = null; }
     var p = S.selected;
-    if (!p) {
-      V.detail.appendChild(el('div', { class: 'card' }, [el('div', { class: 'empty-state' }, [el('span', { html: CQ.icons.sparkle }), el('b', { text: 'Pick a preset' })])]));
-      return;
-    }
+    if (!p) return;
     var cv = el('canvas', { width: 640, height: 360 });
-    bigPlayer = new CQ.preview.Player(cv, effectivePreset(), previewOpts());
-    bigPlayer.paused = false;
-    U.watch(cv, bigPlayer);
-    var playBtn = el('button', { class: 'btn icon ghost play', title: 'Play / pause', html: CQ.icons.pause });
-    playBtn.addEventListener('click', function () {
-      bigPlayer.paused = !bigPlayer.paused;
-      if (bigPlayer.paused) bigPlayer.stop(false); else bigPlayer.start();
-      playBtn.innerHTML = bigPlayer.paused ? CQ.icons.play : CQ.icons.pause;
+    big = new CQ.preview.Player(cv, effective(), { speed: S.opts.speed, text: S.text || null, fps: 30 });
+    big.paused = false;
+    U.watch(cv, big);
+    var play = U.btn('', { cls: 'icon play', icon: 'pause', title: 'Play / pause' });
+    play.addEventListener('click', function () {
+      big.paused = !big.paused;
+      if (big.paused) big.stop(false); else big.start();
+      play.innerHTML = CQ.icons[big.paused ? 'play' : 'pause'];
     });
-    var textIn = el('input', { class: 'input', value: S.text, placeholder: p.sample.replace(/\n/g, ' / ') });
-    textIn.addEventListener('input', function () {
-      S.text = textIn.value; U.store.set('animText', S.text);
-      updateBig();
-      clearTimeout(textIn._t); textIn._t = setTimeout(function () { cards.forEach(function (c) { c.player.setOptions({ text: S.text || null }); }); }, 400);
+    var txt = el('input', { class: 'input', value: S.text, placeholder: p.sample.replace(/\n/g, ' ') });
+    txt.addEventListener('input', function () {
+      S.text = txt.value; U.store.set('animText', S.text); updateBig();
+      clearTimeout(txt._t); txt._t = setTimeout(function () { cards.forEach(function (c) { c.player.setOptions({ text: S.text || null }); c.player.stop(true); }); }, 400);
     });
     var o = S.opts;
-    var speedLbl = el('span', { class: 'lbl', text: o.speed.toFixed(2) + '×' });
-    var miss = missing(p);
-    V.apply = el('button', { class: 'btn primary block', onclick: apply }, [U.icon('wand'), 'Apply']);
-    V.remove = el('button', { class: 'btn ghost', onclick: removePreset, title: 'Remove CyriqCap animation from selected layers' }, [U.icon('trash'), 'Remove']);
-    var fillSw = U.swatch(o.fill, function (v) { o.fill = v; saveOpts(); });
-    var glowSw = U.swatch(o.glow, function (v) { o.glow = v; saveOpts(); });
-    V.detail.appendChild(el('div', { class: 'card' }, [
-      el('div', { class: 'title' }, [el('b', { text: p.name }), el('span', { class: 'badge info', text: p.cat }), miss.length ? el('span', { class: 'badge warn', text: needsLabel(p) }) : null]),
-      el('div', { class: 'stage-wrap' }, [cv, el('span', { class: 'tag', text: (CQ.presets.FONTS[p.font] || {}).css || '' }), playBtn]),
-      U.field('Preview text', textIn),
-      el('div', { class: 'row', style: { marginTop: '.5rem' } }, [
-        el('div', { class: 'field' }, [el('div', { style: { display: 'flex', justifyContent: 'space-between' } }, [el('span', { class: 'lbl', text: 'Speed' }), speedLbl]),
-          U.range(0.25, 3, 0.05, o.speed, function (v) { o.speed = v; speedLbl.textContent = v.toFixed(2) + '×'; clearTimeout(speedLbl._t); speedLbl._t = setTimeout(saveOpts, 120); })])
-      ]),
-      el('div', { class: 'row' }, [
-        el('div', { class: 'toggle-row field' }, [el('span', { class: 'lbl', text: 'Preset font' }), U.toggle(o.useFont, function (v) { o.useFont = v; saveOpts(); })]),
-        el('div', { class: 'toggle-row field' }, [el('span', { class: 'lbl', text: 'Preset colors' }), U.toggle(o.useColors, function (v) { o.useColors = v; saveOpts(); })])
-      ]),
-      el('div', { class: 'row' }, [
-        el('div', { class: 'toggle-row field' }, [el('span', { class: 'lbl', text: 'Text color' }), U.toggle(o.overrideFill, function (v) { o.overrideFill = v; saveOpts(); })]),
-        el('div', { class: 'toggle-row field' }, [el('span', { class: 'lbl', text: 'Glow color' }), U.toggle(o.overrideGlow, function (v) { o.overrideGlow = v; saveOpts(); })])
-      ]),
-      el('div', { class: 'row' }, [U.field('Text', fillSw, 'sm'), U.field('Glow', glowSw, 'sm')]),
-      el('div', { class: 'row', style: { alignItems: 'stretch' } }, [el('div', { style: { flex: '1 1 auto' } }, [V.apply]), V.remove])
+    var spLbl = el('span', { class: 'muted', text: o.speed.toFixed(2) + '×' });
+    V.apply = U.btn('Apply', { cls: 'primary', icon: 'check', onClick: apply });
+    V.remove = U.btn('Remove', { icon: 'trash', onClick: removePreset, title: 'Remove the CyriqCap animation from the selected layers' });
+    V.detail.appendChild(el('div', { class: 'head' }, [el('b', { text: p.name }), el('span', { text: p.cat + ' · ' + ((CQ.presets.FONTS[p.font] || {}).css || '') })]));
+    V.detail.appendChild(el('div', { class: 'stage' }, [cv, play]));
+    V.detail.appendChild(el('div', { class: 'grid2' }, [
+      U.field('Preview text', txt, 'span2'),
+      el('div', { class: 'field span2' }, [el('label', null, ['Speed ', spLbl]), U.range(0.25, 3, 0.05, o.speed, function (v) { o.speed = v; spLbl.textContent = v.toFixed(2) + '×'; clearTimeout(spLbl._t); spLbl._t = setTimeout(save, 120); })]),
+      U.check('Preset font', o.useFont, function (v) { o.useFont = v; save(); }),
+      U.check('Preset colors', o.useColors, function (v) { o.useColors = v; save(); }),
+      U.check('Custom color', o.overrideFill, function (v) { o.overrideFill = v; save(); }),
+      U.color(o.fill, function (v) { o.fill = v; save(); })
     ]));
+    V.detail.appendChild(el('div', { class: 'line', style: { marginTop: '.7rem' } }, [el('div', { class: 'grow' }, [V.apply]), V.remove]));
+    V.apply.style.width = '100%';
     updateApplyState();
   }
 
   function updateApplyState() {
-    if (!V.apply) return;
-    V.apply.disabled = !S.textLayers;
-    V.apply.lastChild.textContent = S.textLayers > 1 ? 'Apply to ' + S.textLayers + ' layers' : 'Apply';
+    if (V.apply) { V.apply.disabled = !S.textLayers; V.apply.lastChild.textContent = S.textLayers > 1 ? 'Apply to ' + S.textLayers + ' layers' : 'Apply'; }
     if (V.remove) V.remove.disabled = !S.textLayers;
   }
 
-  /* ---------------------------------------------------------- apply */
   function apply() {
-    var p = S.selected;
-    if (!p) return;
+    var p = S.selected; if (!p) return;
     var miss = missing(p);
-    if (miss.length) { pluginModal(p, miss); return; }
+    if (miss.length) { pluginDialog(p, miss); return; }
     var opts = { speed: S.opts.speed, useFont: S.opts.useFont, useColors: S.opts.useColors };
     if (S.opts.overrideFill) opts.fill = S.opts.fill;
-    if (S.opts.overrideGlow) opts.glow = S.opts.glow;
-    var built = CQ.builder.build(p, opts);
-    V.apply.classList.add('loading');
-    CQ.host.call('applyPreset', { preset: built }).then(function (r) {
-      V.apply.classList.remove('loading');
+    V.apply.setBusy(true);
+    CQ.host.call('applyPreset', { preset: CQ.builder.build(p, opts) }).then(function (r) {
+      V.apply.setBusy(false);
       if (!r.ok) {
-        if (r.code === 'NO_TEXT_LAYERS') U.modal({ kind: 'warn', icon: 'text', title: 'Select text layers', text: 'Select one or more text layers in the timeline.', list: (r.skipped || []).slice(0, 5).map(function (s) { return s.name + ' — ' + s.reason; }) });
-        else if (r.code === 'PLUGIN_MISSING') { (r.missing || []).forEach(function (n) { CQ.app.plugins[n] = false; }); pluginModal(p, r.missing || []); renderCards(); }
-        else if (r.code === 'NO_COMP') U.modal({ kind: 'warn', title: 'No composition', text: 'Open a composition first.' });
-        else U.modal({ kind: 'err', title: 'Could not apply', text: r.message });
+        if (r.code === 'NO_TEXT_LAYERS') U.dialog({ kind: 'warn', icon: 'text', title: 'Select text layers', text: 'Select one or more text layers in the timeline, then click Apply.' });
+        else if (r.code === 'PLUGIN_MISSING') { (r.missing || []).forEach(function (n) { CQ.app.plugins[n] = false; }); pluginDialog(p, r.missing || []); renderCards(); }
+        else if (r.code === 'NO_COMP') U.dialog({ kind: 'warn', title: 'No composition open', text: 'Open a composition and select text layers.' });
+        else { CQ.services.Log.error(null, 'apply ' + p.id + ' ' + r.code + ' ' + r.message); U.dialog({ kind: 'err', title: 'Could not apply the preset', text: 'Nothing was changed. Try again.' }); }
         return;
       }
-      var okN = r.results.filter(function (x) { return x.ok; }).length;
-      var failed = r.results.filter(function (x) { return !x.ok; });
-      var warns = [];
-      r.results.forEach(function (x) { (x.warnings || []).forEach(function (w) { if (warns.indexOf(w) < 0) warns.push(w); }); });
-      var fonts = warns.filter(function (w) { return w.indexOf('FONT_MISSING') === 0; }).map(function (w) { return w.split(':')[1]; });
-      var other = warns.filter(function (w) { return w.indexOf('FONT_MISSING') !== 0; });
-      if (failed.length) U.modal({ kind: 'err', title: 'Applied to ' + okN + ' of ' + r.results.length + ' layers', list: failed.map(function (f) { return f.name + ': ' + f.error; }) });
-      else U.toast('ok', p.name + ' applied', okN + ' layer' + (okN > 1 ? 's' : '') + (r.skipped && r.skipped.length ? ' · ' + r.skipped.length + ' skipped' : ''));
-      if (fonts.length) CQ.app.fontMissing(fonts);
-      if (other.length) { CQ.services.Log.warn(null, 'apply ' + p.id + ' warnings: ' + other.join(' | ')); U.toast('warn', 'Applied with notes', other.slice(0, 2).join(' · ')); }
-    }, function (e) { V.apply.classList.remove('loading'); U.modal({ kind: 'err', title: 'After Effects did not respond', text: e.message }); });
+      var ok = r.results.filter(function (x) { return x.ok; }).length, failed = r.results.length - ok;
+      var notes = [];
+      r.results.forEach(function (x) { (x.warnings || []).forEach(function (w) { notes.push(w); }); if (!x.ok) notes.push(x.name + ': ' + x.error); });
+      if (notes.length) CQ.services.Log.warn(null, 'apply ' + p.id + ' notes: ' + notes.join(' | '));
+      if (failed) U.dialog({ kind: 'warn', title: 'Applied to ' + ok + ' of ' + r.results.length + ' layers', text: 'Some layers could not be changed. Make sure they are unlocked text layers.' });
+      else U.toast('ok', p.name + ' applied', ok + ' layer' + (ok > 1 ? 's' : '') + ' · keyframes at each layer’s start and end');
+      if (notes.some(function (w) { return w.indexOf('FONT_MISSING') === 0; })) CQ.app.fontMissing();
+    }, function () { V.apply.setBusy(false); U.dialog({ kind: 'err', title: 'After Effects is not responding', text: 'Wait a moment and try again.' }); });
   }
 
   function removePreset() {
-    CQ.host.call('removePreset').then(function (r) {
-      if (r.ok) U.toast('ok', 'Animation removed', r.cleared + ' layer' + (r.cleared === 1 ? '' : 's'));
-      else U.toast('err', 'Could not remove', r.message);
-    });
+    CQ.host.call('removePreset').then(function (r) { if (r.ok) U.toast('ok', 'Animation removed', r.cleared + ' layer' + (r.cleared === 1 ? '' : 's')); });
   }
 
-  /* ---------------------------------------------------------- build */
   function build(rootEl) {
-    var search = el('input', { class: 'input', placeholder: 'Search', value: '' });
+    var search = el('input', { class: 'input', placeholder: 'Search presets' });
     search.addEventListener('input', function () { S.q = search.value; clearTimeout(search._t); search._t = setTimeout(renderCards, 150); });
-    V.selPill = el('span', { class: 'pill sel-pill' }, [el('span', { class: 'dot', id: 'textSelDot' }), el('span', { text: '0 text layers' })]);
-    V.count = el('span', { class: 'badge info' });
-    var chips = el('div', { class: 'chips' });
-    CQ.presets.CATEGORIES.forEach(function (c) {
-      var b = el('button', { class: 'chip' + (c === S.cat ? ' active' : ''), text: c });
-      b.addEventListener('click', function () { S.cat = c; U.store.set('animCat', c); U.$$('.chip', chips).forEach(function (x) { x.classList.toggle('active', x === b); }); renderCards(); });
-      chips.appendChild(b);
-    });
-    V.grid = el('div', { class: 'grid' });
+    V.sel = el('span', { class: 'count' });
+    V.count = el('span', { class: 'count' });
+    V.cards = el('div', { class: 'cards' });
     V.detail = el('div', { class: 'detail' });
-    var left = el('div', null, [
-      el('div', { class: 'toolbar' }, [el('div', { class: 'search' }, [el('span', { html: CQ.icons.search }), search]), V.selPill]),
-      el('div', { style: { display: 'flex', alignItems: 'center' } }, [chips, el('span', { class: 'spacer' }), V.count]),
-      V.grid
-    ]);
-    rootEl.appendChild(el('div', { class: 'anim-layout' }, [left, V.detail]));
-    // skeletons while fonts load
-    for (var i = 0; i < 8; i++) V.grid.appendChild(el('div', { class: 'preset' }, [el('div', { class: 'skeleton', style: { paddingTop: '56.25%' } }), el('div', { class: 'cap' }, [el('span', { class: 'nm skeleton', style: { height: '.7rem', borderRadius: '.3rem' } })])]));
-    renderDetail();
+    var cats = U.seg(CQ.presets.CATEGORIES.map(function (c) { return { label: c, value: c }; }), S.cat, function (c) { S.cat = c; U.store.set('animCat', c); renderCards(); });
+    rootEl.appendChild(el('div', { class: 'split' }, [
+      el('div', { class: 'side' }, [V.detail]),
+      el('div', null, [
+        el('div', { class: 'toolbar' }, [el('div', { class: 'search' }, [U.svg('search'), search]), V.sel]),
+        el('div', { class: 'cats' }, [cats]),
+        el('div', { class: 'line', style: { marginBottom: '.4rem' } }, [V.count]),
+        V.cards
+      ])
+    ]));
   }
 
   function onSelection(sel) {
     var n = sel && sel.layers ? sel.layers.filter(function (l) { return l.kind === 'text'; }).length : 0;
     S.textLayers = n;
-    if (V.selPill) {
-      V.selPill.lastChild.textContent = n + ' text layer' + (n === 1 ? '' : 's');
-      V.selPill.firstChild.className = 'dot ' + (n ? 'ok' : 'warn');
-    }
+    if (V.sel) V.sel.textContent = n ? n + ' text layer' + (n > 1 ? 's' : '') + ' selected' : 'No text layer selected';
     updateApplyState();
   }
 
-  CQ.animate = { build: build, ready: function () { renderCards(); if (!S.selected) { S.selected = visible()[0] || null; renderDetail(); renderCards(); } }, onSelection: onSelection, pluginModal: pluginModal, refresh: renderCards, state: S };
+  CQ.animate = {
+    build: build, onSelection: onSelection, pluginDialog: pluginDialog, pluginModal: pluginDialog, refresh: renderCards, state: S,
+    ready: function () { if (!S.selected) S.selected = visible()[0] || CQ.presets.list[0]; renderCards(); renderDetail(); }
+  };
 })(typeof window !== 'undefined' ? window : global);

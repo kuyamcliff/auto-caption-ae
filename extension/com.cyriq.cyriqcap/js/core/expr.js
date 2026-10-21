@@ -47,6 +47,20 @@
     'function rnd(k){var x=Math.sin((k+1)*12.9898+SEED*78.233)*43758.5453;return x-Math.floor(x);}\n';
 
   /**
+   * Where local time comes from.
+   * Preview: real time relative to the layer's in/out points.
+   * After Effects: two keyframed sliders on the text layer ("CQ In" 0->100 at
+   * the start of the layer, "CQ Out" 0->100 at its end). Moving those
+   * keyframes retimes the whole animation; every layer keeps its own keys.
+   */
+  function timeSource(env, delay) {
+    var d = num(delay || 0, 0);
+    if (!env || !env.ae) return 'var tin=time-inPoint-' + d + ',tout=outPoint-time;\n';
+    var ref = env.src === 'parent' ? 'thisLayer.parent.' : '';
+    return 'var tin=(' + ref + 'effect("CQ In")(1)/100)*' + num(env.inT * 1.002, 1) + '-' + d + ',tout=(1-' + ref + 'effect("CQ Out")(1)/100)*' + num(env.outT, 1) + ';\n';
+  }
+
+  /**
    * Build the amount curve for one animator.
    * timing = {
    *   phase: 'in' | 'out' | 'both' | 'loop' | 'hold',
@@ -62,7 +76,7 @@
    * }
    * Result: 100 = fully "animated" state (hidden), 0 = rest.
    */
-  function amountCore(timing) {
+  function amountCore(timing, env) {
     var t = timing || {};
     var phase = t.phase || 'in';
     var dur = Math.max(0.01, Number(t.dur) || 0.8);
@@ -82,7 +96,7 @@
     s += ORDERS[outOrder].replace('function rk(', 'function rkOut(') + '\n';
     s += EASES[ease].replace('function ez(', 'function ezIn(') + '\n';
     s += EASES[outEase].replace('function ez(', 'function ezOut(') + '\n';
-    s += 'var tin=time-inPoint-' + num(delay, 0) + ',tout=outPoint-time;\n';
+    s += timeSource(env, delay);
     var outOverlap = t.outOverlap == null ? overlap : Math.min(1, Math.max(0, Number(t.outOverlap)));
     s += 'var D=' + num(dur, 0.8) + ',DO=' + num(outDur, 0.8) + ',OV=' + num(overlap, 0.35) + ',OVO=' + num(outOverlap, 0.35) + ';\n';
     // per-character slot: with overlap 1 every char uses the full duration,
@@ -109,7 +123,7 @@
       var spread = num(t.loopSpread == null ? 0.5 : t.loopSpread, 0.5);
       // travelling band: 1 when the sweep is on this character, 0 elsewhere
       s += 'var P=' + per + ',SP=' + spread + ';\n';
-      s += 'var ph=((tin/P)%1+1)%1;var pos=ph*(1+SP*2)-SP;var x=N>1?I/(N-1):0.5;\n';
+      s += 'var ph=(((time-inPoint)/P)%1+1)%1;var pos=ph*(1+SP*2)-SP;var x=N>1?I/(N-1):0.5;\n';
       s += 'var dd=Math.abs(x-pos)/SP;res=dd>=1?0:Math.cos(dd*Math.PI/2);res=1-res;\n';
     }
     if (phase === 'hold') {
@@ -121,7 +135,7 @@
     }
     if (phase === 'drift') {
       // slow linear drift across the whole life of the layer
-      s += 'res=cl(tin/Math.max(0.01,outPoint-inPoint));\n';
+      s += 'res=cl((time-inPoint)/Math.max(0.01,outPoint-inPoint));\n';
     }
     if (t.jitter) {
       // random on/off flashes (colour flicker, glitch offsets)
@@ -133,7 +147,7 @@
       var amt = Math.max(0.001, Number(w.amount) || 1);
       s += 'var wf=' + num(w.freq || 2, 2) + ',wp=rnd(I)*6.2832,wq=rnd(I+57)*6.2832;\n';
       s += 'var wn=(Math.sin(time*wf*2.1+wp)*0.6+Math.sin(time*wf*3.7+wq)*0.4);\n';
-      s += 'var wd=' + num((Number(w.settle) || 0) / amt, 0) + '+(1-' + num((Number(w.settle) || 0) / amt, 0) + ')*(1-cl(tin/' + num(w.decay || 2, 2) + '));\n';
+      s += 'var wd=' + num((Number(w.settle) || 0) / amt, 0) + '+(1-' + num((Number(w.settle) || 0) / amt, 0) + ')*(1-cl((time-inPoint)/' + num(w.decay || 2, 2) + '));\n';
       s += 'res=res*wn*wd;\n';
     }
     if (t.select) {
@@ -146,8 +160,8 @@
   }
 
   /** AE expression selector amount (percent, 3D). */
-  function selectorExpression(timing) {
-    return amountCore(timing) + 'var v=res*100;\n[v,v,v];';
+  function selectorExpression(timing, env) {
+    return amountCore(timing, env) + 'var v=res*100;\n[v,v,v];';
   }
 
   /** Compile the same source for the preview. */
@@ -167,21 +181,21 @@
    * Exposes `pin` (0..1 eased in progress) and `pout` (0..1 eased out progress)
    * and `lt` (local time since in-point).
    */
-  function layerCore(opts) {
+  function layerCore(opts, env) {
     var o = opts || {};
     var ease = EASES[o.ease] ? o.ease : 'cubicOut';
     var outEase = EASES[o.outEase] ? o.outEase : ease;
     var s = 'var SEED=' + Math.round(Number(o.seed) || 3) + ';\n' + HELPERS;
     s += EASES[ease].replace('function ez(', 'function ezIn(') + '\n';
     s += EASES[outEase].replace('function ez(', 'function ezOut(') + '\n';
-    s += 'var lt=time-inPoint-' + num(o.delay || 0, 0) + ',lo=outPoint-time;\n';
+    s += timeSource(env, o.delay || 0).replace('var tin=', 'var lt=').replace(',tout=', ',lo=');
     s += 'var pin=ezIn(lt/' + num(o.dur || 0.6, 0.6) + ');\n';
     s += 'var pout=' + (o.out === false ? '1' : 'ezOut(lo/' + num(o.outDur || o.dur || 0.5, 0.5) + ')') + ';\n';
     return s;
   }
 
-  function layerExpression(opts, valueCode) {
-    return layerCore(opts) + valueCode;
+  function layerExpression(opts, valueCode, env) {
+    return layerCore(opts, env) + valueCode;
   }
 
   /** Compile a layer-level expression for the preview: returns fn(time,inPoint,outPoint,value). */
@@ -207,6 +221,7 @@
     layerCore: layerCore,
     layerExpression: layerExpression,
     compileLayer: compileLayer,
+    timeSource: timeSource,
     num: num
   };
 

@@ -48,6 +48,10 @@ function makeEnv(state) {
       this.propertyType = kind || 'PROPERTY'; this.numProperties = 0; this._children = [];
     }
     get value() { return this._value; }
+    get numKeys() { return (this._keys || []).length; }
+    setValueAtTime(t, v) { if (!isFinite(t) || !isFinite(v)) throw new Error('bad key'); this._keys = this._keys || []; this._keys.push([t, v]); this._keys.sort((x, y) => x[0] - y[0]); }
+    setInterpolationTypeAtKey(i) { if (!this._keys || i < 1 || i > this._keys.length) throw new Error('bad key index'); }
+    valueAtTime(t) { const k = this._keys; if (!k || !k.length) return this._value; if (t <= k[0][0]) return k[0][1]; if (t >= k[k.length - 1][0]) return k[k.length - 1][1]; for (let i = 0; i < k.length - 1; i++) if (t <= k[i + 1][0]) return k[i][1] + (k[i + 1][1] - k[i][1]) * (t - k[i][0]) / (k[i + 1][0] - k[i][0]); }
     setValue(v) {
       if (v === undefined || (typeof v === 'number' && !isFinite(v))) throw new Error('bad value for ' + this.matchName);
       if (Array.isArray(v) && v.some(x => typeof x !== 'number' || !isFinite(x))) throw new Error('bad array value for ' + this.matchName);
@@ -187,7 +191,7 @@ function makeEnv(state) {
   class CameraLayer extends Layer {}
   class LightLayer extends Layer {}
   class CompItem {
-    constructor() { this.id = 1; this.name = 'Comp 1'; this.width = 1920; this.height = 1080; this.duration = 10; this.frameRate = 30; this.time = 0; this._layers = []; this.motionBlur = false; this.workAreaStart = 0; this.workAreaDuration = 10;
+    constructor() { this.id = 1; this.name = 'Comp 1'; this.width = 1920; this.height = 1080; this.duration = 10; this.frameRate = 30; this.frameDuration = 1 / 30; this.time = 0; this._layers = []; this.motionBlur = false; this.workAreaStart = 0; this.workAreaDuration = 10;
       const self = this;
       this.layers = {
         addText(t) { const l = new TextLayer(self, t); self._layers.unshift(l); return l; },
@@ -212,7 +216,7 @@ function makeEnv(state) {
     beginUndoGroup(n) { state.undo.push('begin:' + n); },
     endUndoGroup() { state.undo.push('end'); }
   };
-  return { app, comp, CompItem, TextLayer, ShapeLayer, AVLayer, CameraLayer, LightLayer, FootageItem, SolidSource, Shape, PropertyType: { PROPERTY: 'PROPERTY', NAMED_GROUP: 'NAMED_GROUP', INDEXED_GROUP: 'INDEXED_GROUP' }, ParagraphJustification: { LEFT_JUSTIFY: 7413, CENTER_JUSTIFY: 7415, RIGHT_JUSTIFY: 7414 }, File: function () {}, $: { os: 'Windows' } };
+  return { app, comp, CompItem, TextLayer, ShapeLayer, AVLayer, CameraLayer, LightLayer, FootageItem, SolidSource, Shape, PropertyType: { PROPERTY: 'PROPERTY', NAMED_GROUP: 'NAMED_GROUP', INDEXED_GROUP: 'INDEXED_GROUP' }, ParagraphJustification: { LEFT_JUSTIFY: 7413, CENTER_JUSTIFY: 7415, RIGHT_JUSTIFY: 7414 }, KeyframeInterpolationType: { LINEAR: 6612, BEZIER: 6613, HOLD: 6614 }, File: function () {}, $: { os: 'Windows' } };
 }
 
 /** Evaluate an expression the way After Effects does (value of the last statement). */
@@ -227,7 +231,17 @@ function evalExpression(code, ctx) {
     },
     sourceRectAtTime() { return { left: -300, top: -80, width: 600, height: 100 }; }
   }, ctx.env || {});
-  env.thisLayer = { sourceRectAtTime: env.sourceRectAtTime, parent: { sourceRectAtTime: env.sourceRectAtTime }, inPoint: env.inPoint, outPoint: env.outPoint };
+  if (!env.effect) {
+    // default timing sliders: In keyed over 0.75 s from the in-point, Out over the last 0.5 s
+    const cl = v => v < 0 ? 0 : v > 1 ? 1 : v;
+    const inT = env.inT || 0.75, outT = env.outT || 0.5;
+    env.effect = name => {
+      if (name === 'CQ In') return () => cl((env.time - env.inPoint) / inT) * 100;
+      if (name === 'CQ Out') return () => cl((env.time - (env.outPoint - outT)) / outT) * 100;
+      throw new ExprError('effect "' + name + '" not found');
+    };
+  }
+  env.thisLayer = { sourceRectAtTime: env.sourceRectAtTime, effect: env.effect, parent: { sourceRectAtTime: env.sourceRectAtTime, effect: env.effect }, inPoint: env.inPoint, outPoint: env.outPoint };
   const fn = new Function('env', '__code', 'with (env) { return eval(__code); }');
   return fn(env, code);
 }
